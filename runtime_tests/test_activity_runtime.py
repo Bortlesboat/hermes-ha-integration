@@ -210,7 +210,7 @@ async def test_ambiguous_http_failure_does_not_replay_real_ha_turn(
     events = []
     remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
     try:
-        for status in (400, 429, 500, 503):
+        for status in (400, 403, 429, 500, 503):
             hermes_api.chat_status = status
             before = hermes_api.count_paths("/v1/chat/completions")
             result = await _process(hass, entry, f"private HTTP {status} turn")
@@ -230,10 +230,17 @@ async def test_ambiguous_http_failure_does_not_replay_real_ha_turn(
                 "started",
                 "failed",
             ]
+            assert events[-1].data["error_category"] == (
+                "auth"
+                if status == 403
+                else "server"
+                if status >= 500
+                else "unreachable"
+            )
         _assert_private_correlated_events(
             events,
             entry.entry_id,
-            *(f"private HTTP {status} turn" for status in (400, 429, 500, 503)),
+            *(f"private HTTP {status} turn" for status in (400, 403, 429, 500, 503)),
         )
     finally:
         remove()
@@ -293,6 +300,98 @@ async def test_server_terminal_error_and_incomplete_real_ha_no_replay(
             secret,
         )
     finally:
+        remove()
+
+
+async def test_server_terminal_error_without_done_real_ha_no_replay(
+    hass_ready: HomeAssistant,
+    hermes_api: HermesLoopbackApi,
+):
+    hass = hass_ready
+    entry = await _setup(hass, hermes_api)
+    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    modern = getattr(conversation, "ChatLog", None) is not None and hasattr(
+        conversation, "async_get_chat_log"
+    )
+    events = []
+    remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
+    secret = "private-server-detail"
+    try:
+        for reason, metadata, error_event in (
+            ("error", None, None),
+            ("length", None, None),
+            (None, {"failed": True}, None),
+            (None, {"completed": False}, None),
+            (None, None, secret),
+        ):
+            for prior_content in (False, True):
+                hermes_api.chat_response = (
+                    "synthetic partial speech" if prior_content else ""
+                )
+                hermes_api.chat_partial = True
+                hermes_api.chat_finish_reason = reason
+                hermes_api.chat_terminal_hermes = (
+                    {**metadata, "error": secret} if metadata is not None else None
+                )
+                hermes_api.chat_terminal_error = secret if reason else None
+                hermes_api.chat_error_event = error_event
+                before = hermes_api.count_paths("/v1/chat/completions")
+                result = await _process(hass, entry, "private EOF prompt")
+                await hass.async_block_till_done()
+                assert hermes_api.count_paths("/v1/chat/completions") == before + 1
+                expected = "partial" if prior_content and modern else "failed"
+                assert hass.states.get(outcome).state == expected
+                assert [e.data["status"] for e in events[-2:]] == ["started", expected]
+                assert events[-1].data["error_category"] == "server"
+                assert secret not in str(result.response.as_dict())
+                if expected == "partial":
+                    assert (
+                        result.response.speech["plain"]["speech"]
+                        == "synthetic partial speech"
+                    )
+                else:
+                    assert (
+                        result.response.response_type
+                        == conversation.intent.IntentResponseType.ERROR
+                    )
+        _assert_private_correlated_events(
+            events, entry.entry_id, "private EOF prompt", secret
+        )
+    finally:
+        remove()
+
+
+async def test_real_ha_chat_timeout_category(
+    hass_ready: HomeAssistant,
+    hermes_api: HermesLoopbackApi,
+):
+    hass = hass_ready
+    entry = await _setup(hass, hermes_api)
+    client = hass.data[DOMAIN][entry.entry_id]["client"]
+    client._request_timeout = 1
+    client._stream_timeout = 1
+    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    hermes_api.block_chat = asyncio.Event()
+    events = []
+    remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
+    try:
+        result = await asyncio.wait_for(
+            _process(hass, entry, "private timeout prompt"), 4
+        )
+        await hass.async_block_till_done()
+        assert (
+            result.response.response_type
+            == conversation.intent.IntentResponseType.ERROR
+        )
+        assert hass.states.get(outcome).state == "failed"
+        assert [e.data["status"] for e in events] == ["started", "failed"]
+        assert events[-1].data["error_category"] == "timeout"
+        assert hermes_api.count_paths("/v1/chat/completions") == 1
+        _assert_private_correlated_events(
+            events, entry.entry_id, "private timeout prompt"
+        )
+    finally:
+        hermes_api.block_chat.set()
         remove()
 
 

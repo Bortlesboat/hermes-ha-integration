@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 
-from tests.test_support import FakeClientTimeout
+from tests.test_support import FakeClientError, FakeClientTimeout
 from custom_components.hermes_conversation.api import (
     HermesApiClient,
     HermesApiError,
@@ -744,6 +745,143 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         parts = [part async for part in client.async_stream_message(
             [{"role": "user", "content": "hi"}])]
         self.assertEqual(parts, ["safe"])
+
+    async def test_chat_http_failures_have_typed_categories_without_raw_body(self):
+        for streaming in (False, True):
+            for status, category in ((401, "auth"), (403, "auth"),
+                                     (400, "unreachable"), (429, "unreachable"),
+                                     (500, "server"), (503, "server")):
+                with self.subTest(streaming=streaming, status=status):
+                    session = FakeSession([FakeResponse(
+                        status=status, text_data="private-server-detail"
+                    )])
+                    client = HermesApiClient(session, "agent.local", 8443)
+                    with self.assertRaises(HermesApiError) as caught:
+                        if streaming:
+                            async for _ in client.async_stream_message([{"role": "user", "content": "hi"}]):
+                                pass
+                        else:
+                            await client.async_send_message([{"role": "user", "content": "hi"}])
+                    if category == "auth":
+                        self.assertIsInstance(caught.exception, HermesAuthError)
+                    else:
+                        self.assertIsInstance(caught.exception, HermesConnectionError)
+                        self.assertEqual(caught.exception.status_code, status)
+                        self.assertEqual(caught.exception.error_category, category)
+                    self.assertNotIsInstance(caught.exception, HermesStreamSetupError)
+                    self.assertNotIn("private-server-detail", str(caught.exception))
+                    self.assertEqual(len(session.calls), 1)
+
+    async def test_chat_transport_timeout_is_typed_before_and_after_stream_content(self):
+        class TimedOutResponse(FakeResponse):
+            async def __aenter__(self):
+                raise asyncio.TimeoutError("private-server-detail")
+
+        class TimedOutStream(FakeResponse):
+            async def iter_any(self):
+                yield b'data: {"choices": [{"delta": {"content": "safe"}}]}\n\n'
+                raise asyncio.TimeoutError("private-server-detail")
+
+        class DisconnectedResponse(FakeResponse):
+            async def __aenter__(self):
+                raise FakeClientError("private-server-detail")
+
+        for streaming, response, expected, category in (
+            (False, TimedOutResponse(), [], "timeout"),
+            (True, TimedOutResponse(), [], "timeout"),
+            (True, TimedOutStream(), ["safe"], "timeout"),
+            (False, DisconnectedResponse(), [], "unreachable"),
+            (True, DisconnectedResponse(), [], "unreachable"),
+        ):
+            with self.subTest(streaming=streaming, expected=expected, category=category):
+                session = FakeSession([response])
+                client = HermesApiClient(session, "agent.local", 8443)
+                delivered = []
+                with self.assertRaises(HermesConnectionError) as caught:
+                    if streaming:
+                        async for part in client.async_stream_message([{"role": "user", "content": "hi"}]):
+                            delivered.append(part)
+                    else:
+                        await client.async_send_message([{"role": "user", "content": "hi"}])
+                self.assertEqual(delivered, expected)
+                self.assertEqual(caught.exception.error_category, category)
+                self.assertNotIn("private-server-detail", str(caught.exception))
+                self.assertEqual(len(session.calls), 1)
+
+    async def test_known_stream_failure_without_done_remains_server_failure(self):
+        for terminal in (
+            {"choices": [{"finish_reason": "error", "delta": {}}]},
+            {"choices": [{"finish_reason": "length", "delta": {}}]},
+            {"hermes": {"failed": True, "error": "private-server-detail"}},
+            {"hermes": {"completed": False}},
+            {"error": "private-server-detail"},
+        ):
+            for prior_content in (False, True):
+                with self.subTest(terminal=terminal, prior_content=prior_content):
+                    chunks = []
+                    if prior_content:
+                        chunks.append('data: {"choices": [{"delta": {"content": "safe"}}]}\n\n')
+                    chunks.append('data: ' + json.dumps(terminal) + '\n\n')
+                    session = FakeSession([FakeResponse(chunks=chunks)])
+                    delivered = []
+                    with self.assertRaises(HermesConnectionError) as caught:
+                        async for part in HermesApiClient(session, "agent.local", 8443).async_stream_message(
+                            [{"role": "user", "content": "hi"}]
+                        ):
+                            delivered.append(part)
+                    self.assertEqual(delivered, ["safe"] if prior_content else [])
+                    self.assertEqual(caught.exception.error_category, "server")
+                    self.assertNotIn("private-server-detail", str(caught.exception))
+                    self.assertEqual(len(session.calls), 1)
+
+        for prior_content in (False, True):
+            chunks = []
+            if prior_content:
+                chunks.append('data: {"choices": [{"delta": {"content": "safe"}}]}\n\n')
+            chunks.append('event: error\ndata: {"error": "private-server-detail"}\n\n')
+            session = FakeSession([FakeResponse(chunks=chunks)])
+            delivered = []
+            with self.assertRaises(HermesConnectionError) as caught:
+                async for part in HermesApiClient(session, "agent.local", 8443).async_stream_message(
+                    [{"role": "user", "content": "hi"}]
+                ):
+                    delivered.append(part)
+            self.assertEqual(delivered, ["safe"] if prior_content else [])
+            self.assertEqual(caught.exception.error_category, "server")
+            self.assertNotIn("private-server-detail", str(caught.exception))
+            self.assertEqual(len(session.calls), 1)
+
+    async def test_known_failure_precedes_transport_close_category(self):
+        class ClosedStream(FakeResponse):
+            async def iter_any(self):
+                yield b'data: {"choices": [{"delta": {"content": "safe"}}]}\n\n'
+                yield b'data: {"choices": [{"finish_reason": "error", "delta": {}}]}\n\n'
+                raise FakeClientError("private-server-detail")
+
+        session = FakeSession([ClosedStream()])
+        delivered = []
+        with self.assertRaises(HermesConnectionError) as caught:
+            async for part in HermesApiClient(session, "agent.local", 8443).async_stream_message(
+                [{"role": "user", "content": "hi"}]
+            ):
+                delivered.append(part)
+        self.assertEqual(delivered, ["safe"])
+        self.assertEqual(caught.exception.error_category, "server")
+        self.assertNotIn("private-server-detail", str(caught.exception))
+        self.assertEqual(len(session.calls), 1)
+
+    async def test_unknown_stream_eof_remains_unreachable(self):
+        session = FakeSession([FakeResponse(chunks=[
+            'data: {"choices": [{"delta": {"content": "safe"}}]}\n\n'
+        ])])
+        delivered = []
+        with self.assertRaises(HermesConnectionError) as caught:
+            async for part in HermesApiClient(session, "agent.local", 8443).async_stream_message(
+                [{"role": "user", "content": "hi"}]
+            ):
+                delivered.append(part)
+        self.assertEqual(delivered, ["safe"])
+        self.assertEqual(caught.exception.error_category, "unreachable")
 
     async def test_streaming_http_status_is_ambiguous_not_setup_error(self):
         for status in (400, 429, 500, 503):

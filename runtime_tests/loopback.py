@@ -118,6 +118,7 @@ class HermesLoopbackApi:
     chat_finish_reason: str | None = None
     chat_terminal_hermes: dict[str, Any] | None = None
     chat_terminal_error: str | None = None
+    chat_error_event: str | None = None
     block_chat: asyncio.Event | None = None
     chat_started: asyncio.Event = field(default_factory=asyncio.Event)
     _runner: web.AppRunner | None = field(default=None, init=False, repr=False)
@@ -232,6 +233,8 @@ class HermesLoopbackApi:
                 if self.chat_terminal_error is not None:
                     terminal["error"] = self.chat_terminal_error
                 await response.write(f"data: {json.dumps(terminal)}\n\n".encode())
+            if self.chat_error_event is not None:
+                await response.write(f"event: error\ndata: {json.dumps({'error': self.chat_error_event})}\n\n".encode())
             if not self.chat_partial:
                 await response.write(b"data: [DONE]\n\n")
             await response.write_eof()
