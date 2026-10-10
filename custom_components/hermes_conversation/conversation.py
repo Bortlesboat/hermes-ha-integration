@@ -28,7 +28,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import intent, template
 
-from .activity import ERROR_CATEGORIES, RequestActivity
+from .activity import ACTIVITY_ERROR_CATEGORIES, ConversationActivityTracker
 from .api import HermesApiClient, HermesApiError, HermesAuthError, HermesStreamSetupError
 from .compat import entry_value, resolve_continued_conversation_mode
 from .entity import hermes_device_info
@@ -284,7 +284,11 @@ def _activity_error_category(err: HermesApiError) -> str:
     if isinstance(err, HermesAuthError):
         return "auth"
     category = getattr(err, "error_category", None)
-    return category if isinstance(category, str) and category in ERROR_CATEGORIES else "unreachable"
+    return (
+        category
+        if isinstance(category, str) and category in ACTIVITY_ERROR_CATEGORIES
+        else "unreachable"
+    )
 
 
 class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
@@ -305,8 +309,10 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
         self.entry = entry
         self.client = client
         self.session_map = session_map
-        self.activity: RequestActivity | None = (
-            hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("activity")
+        self.conversation_activity: ConversationActivityTracker | None = (
+            hass.data.get(DOMAIN, {})
+            .get(entry.entry_id, {})
+            .get("conversation_activity")
         )
         self._attr_unique_id = entry.entry_id
         self._attr_name = getattr(entry, "title", None) or "Hermes Agent"
@@ -357,8 +363,10 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
         chat_log: ChatLog | None = None,
     ) -> ConversationResult:
         """Process a conversation turn and convert unexpected errors."""
-        token = self.activity.start() if self.activity else None
-        outcome = "failed"
+        request_token = (
+            self.conversation_activity.start() if self.conversation_activity else None
+        )
+        request_outcome = "failed"
         request_state: dict[str, Any] = {"partial": False, "error_category": None}
         try:
             if (
@@ -385,7 +393,7 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
                     user_input, chat_log=chat_log, request_state=request_state
                 )
             if not failed:
-                outcome = "partial" if request_state["partial"] else "completed"
+                request_outcome = "partial" if request_state["partial"] else "completed"
             return result
         except Exception:
             _LOGGER.exception("Unexpected error in async_process")
@@ -402,12 +410,14 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
                 continue_conversation=False,
             )
         except BaseException:
-            outcome = "cancelled"
+            request_outcome = "cancelled"
             raise
         finally:
-            if self.activity:
-                self.activity.finish(
-                    token, outcome, error_category=request_state["error_category"]
+            if self.conversation_activity:
+                self.conversation_activity.finish(
+                    request_token,
+                    request_outcome,
+                    error_category=request_state["error_category"],
                 )
 
     async def _async_process_inner(

@@ -61,11 +61,11 @@ def _id(hass, domain, entry_id, key):
     return value
 
 
-async def _setup(hass, api):
+async def _setup(hass, api, *, title="Hermes Agent"):
     entry = MockConfigEntry(
         domain=DOMAIN,
         entry_id="activity-entry",
-        title="Hermes Agent",
+        title=title,
         data={
             CONF_HOST: "127.0.0.1",
             CONF_PORT: api.port,
@@ -100,10 +100,10 @@ async def test_activity_registry_and_real_conversation_lifecycle(
     ids = {
         key: _id(hass, domain, entry.entry_id, key)
         for domain, key in (
-            ("binary_sensor", "ha_request_in_progress"),
-            ("sensor", "active_ha_requests"),
-            ("sensor", "last_ha_request_duration"),
-            ("sensor", "last_ha_request_outcome"),
+            ("binary_sensor", "processing_conversation"),
+            ("sensor", "active_conversation_requests"),
+            ("sensor", "last_conversation_duration"),
+            ("sensor", "last_conversation_result"),
         )
     }
     devices = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
@@ -111,10 +111,10 @@ async def test_activity_registry_and_real_conversation_lifecycle(
     for entity_id in ids.values():
         item = er.async_get(hass).async_get(entity_id)
         assert item is not None and item.device_id == devices[0].id
-    assert hass.states.get(ids["ha_request_in_progress"]).state == "off"
-    assert hass.states.get(ids["active_ha_requests"]).state == "0"
-    assert hass.states.get(ids["last_ha_request_duration"]).state == STATE_UNAVAILABLE
-    assert hass.states.get(ids["last_ha_request_outcome"]).state == STATE_UNAVAILABLE
+    assert hass.states.get(ids["processing_conversation"]).state == "off"
+    assert hass.states.get(ids["active_conversation_requests"]).state == "0"
+    assert hass.states.get(ids["last_conversation_duration"]).state == STATE_UNAVAILABLE
+    assert hass.states.get(ids["last_conversation_result"]).state == STATE_UNAVAILABLE
     events = []
     remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
     diagnostics_before = hermes_api.count_paths(
@@ -131,10 +131,10 @@ async def test_activity_registry_and_real_conversation_lifecycle(
         assert [event.data["status"] for event in events] == ["started", "completed"]
         assert events[0].data["request_id"] == events[1].data["request_id"]
         assert all("private prompt" not in str(event.data) for event in events)
-        assert hass.states.get(ids["ha_request_in_progress"]).state == "off"
-        assert hass.states.get(ids["active_ha_requests"]).state == "0"
-        assert hass.states.get(ids["last_ha_request_outcome"]).state == "completed"
-        assert float(hass.states.get(ids["last_ha_request_duration"]).state) >= 0
+        assert hass.states.get(ids["processing_conversation"]).state == "off"
+        assert hass.states.get(ids["active_conversation_requests"]).state == "0"
+        assert hass.states.get(ids["last_conversation_result"]).state == "completed"
+        assert float(hass.states.get(ids["last_conversation_duration"]).state) >= 0
         # The real HA conversation API determines which path this invocation uses.
         chat_log = getattr(conversation, "ChatLog", None)
         modern_chat_log = chat_log is not None and hasattr(
@@ -148,7 +148,7 @@ async def test_activity_registry_and_real_conversation_lifecycle(
         partial_result = await _process(hass, entry, "another private prompt")
         await hass.async_block_till_done()
         assert hermes_api.count_paths("/v1/chat/completions") == partial_before + 1
-        assert hass.states.get(ids["last_ha_request_outcome"]).state == (
+        assert hass.states.get(ids["last_conversation_result"]).state == (
             "partial" if modern_chat_log else "failed"
         )
         assert events[3].data["status"] == ("partial" if modern_chat_log else "failed")
@@ -168,7 +168,7 @@ async def test_activity_registry_and_real_conversation_lifecycle(
         await _process(hass, entry, "failed private prompt")
         await hass.async_block_till_done()
         assert hermes_api.count_paths("/v1/chat/completions") == auth_before + 1
-        assert hass.states.get(ids["last_ha_request_outcome"]).state == "failed"
+        assert hass.states.get(ids["last_conversation_result"]).state == "failed"
         assert [event.data["status"] for event in events] == [
             "started",
             "completed",
@@ -193,9 +193,9 @@ async def test_activity_registry_and_real_conversation_lifecycle(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done(wait_background_tasks=True)
         assert (
-            hass.states.get(ids["last_ha_request_outcome"]).state == STATE_UNAVAILABLE
+            hass.states.get(ids["last_conversation_result"]).state == STATE_UNAVAILABLE
         )
-        assert hass.states.get(ids["active_ha_requests"]).state == "0"
+        assert hass.states.get(ids["active_conversation_requests"]).state == "0"
     finally:
         remove()
 
@@ -206,7 +206,7 @@ async def test_ambiguous_http_failure_does_not_replay_real_ha_turn(
 ):
     hass = hass_ready
     entry = await _setup(hass, hermes_api)
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
     events = []
     remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
     try:
@@ -252,7 +252,7 @@ async def test_server_terminal_error_and_incomplete_real_ha_no_replay(
 ):
     hass = hass_ready
     entry = await _setup(hass, hermes_api)
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
     chat_log = getattr(conversation, "ChatLog", None)
     modern = chat_log is not None and hasattr(conversation, "async_get_chat_log")
     events = []
@@ -309,7 +309,7 @@ async def test_server_terminal_error_without_done_real_ha_no_replay(
 ):
     hass = hass_ready
     entry = await _setup(hass, hermes_api)
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
     modern = getattr(conversation, "ChatLog", None) is not None and hasattr(
         conversation, "async_get_chat_log"
     )
@@ -370,7 +370,7 @@ async def test_real_ha_chat_timeout_category(
     client = hass.data[DOMAIN][entry.entry_id]["client"]
     client._request_timeout = 1
     client._stream_timeout = 1
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
     hermes_api.block_chat = asyncio.Event()
     events = []
     remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
@@ -400,8 +400,8 @@ async def test_concurrent_and_cancelled_real_requests(
 ):
     hass = hass_ready
     entry = await _setup(hass, hermes_api)
-    active = _id(hass, "sensor", entry.entry_id, "active_ha_requests")
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
+    active = _id(hass, "sensor", entry.entry_id, "active_conversation_requests")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
     release = asyncio.Event()
     hermes_api.block_chat = release
     events = []
@@ -454,10 +454,12 @@ async def test_unload_cancels_in_flight_real_conversation_without_late_events(
 ):
     hass = hass_ready
     entry = await _setup(hass, hermes_api)
-    active = _id(hass, "sensor", entry.entry_id, "active_ha_requests")
-    in_progress = _id(hass, "binary_sensor", entry.entry_id, "ha_request_in_progress")
-    outcome = _id(hass, "sensor", entry.entry_id, "last_ha_request_outcome")
-    old_activity = hass.data[DOMAIN][entry.entry_id]["activity"]
+    active = _id(hass, "sensor", entry.entry_id, "active_conversation_requests")
+    in_progress = _id(hass, "binary_sensor", entry.entry_id, "processing_conversation")
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
+    old_conversation_activity = hass.data[DOMAIN][entry.entry_id][
+        "conversation_activity"
+    ]
     release = asyncio.Event()
     hermes_api.block_chat = release
     events = []
@@ -469,7 +471,7 @@ async def test_unload_cancels_in_flight_real_conversation_without_late_events(
         )
         await asyncio.wait_for(hermes_api.chat_started.wait(), 5)
         assert not request.done()
-        assert old_activity.active_requests == 1
+        assert old_conversation_activity.active_request_count == 1
         assert hass.states.get(active).state == "1"
         assert hass.states.get(in_progress).state == "on"
         assert [event.data["status"] for event in events] == ["started"]
@@ -477,7 +479,7 @@ async def test_unload_cancels_in_flight_real_conversation_without_late_events(
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert not request.done()
-        assert old_activity.active_requests == 0
+        assert old_conversation_activity.active_request_count == 0
         assert [
             (event.data["status"], event.data["request_id"]) for event in events
         ] == [("started", request_id), ("cancelled", request_id)]
@@ -490,9 +492,11 @@ async def test_unload_cancels_in_flight_real_conversation_without_late_events(
         )
 
         assert await hass.config_entries.async_setup(entry.entry_id)
-        new_activity = hass.data[DOMAIN][entry.entry_id]["activity"]
-        assert new_activity is not old_activity
-        assert new_activity.active_requests == 0
+        new_conversation_activity = hass.data[DOMAIN][entry.entry_id][
+            "conversation_activity"
+        ]
+        assert new_conversation_activity is not old_conversation_activity
+        assert new_conversation_activity.active_request_count == 0
         assert hass.states.get(active).state == "0"
         assert hass.states.get(in_progress).state == "off"
         assert hass.states.get(outcome).state == STATE_UNAVAILABLE
@@ -501,8 +505,8 @@ async def test_unload_cancels_in_flight_real_conversation_without_late_events(
         release.set()
         result = await asyncio.wait_for(request, 5)
         assert result.response.speech["plain"]["speech"] == "synthetic response"
-        assert old_activity.active_requests == 0
-        assert new_activity.active_requests == 0
+        assert old_conversation_activity.active_request_count == 0
+        assert new_conversation_activity.active_request_count == 0
         assert hass.states.get(active).state == "0"
         assert hass.states.get(in_progress).state == "off"
         assert hass.states.get(outcome).state == STATE_UNAVAILABLE

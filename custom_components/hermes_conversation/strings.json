@@ -37,8 +37,8 @@
       "api_connectivity": {
         "name": "API connectivity"
       },
-      "ha_request_in_progress": {
-        "name": "HA request in progress"
+      "processing_conversation": {
+        "name": "Processing conversation"
       }
     },
     "sensor": {
@@ -55,14 +55,14 @@
       "last_successful_connection": {
         "name": "Last successful connection"
       },
-      "active_ha_requests": {
-        "name": "Active HA requests"
+      "active_conversation_requests": {
+        "name": "Active conversation requests"
       },
-      "last_ha_request_duration": {
-        "name": "Last HA request duration"
+      "last_conversation_duration": {
+        "name": "Last conversation duration"
       },
-      "last_ha_request_outcome": {
-        "name": "Last HA request outcome",
+      "last_conversation_result": {
+        "name": "Last conversation result",
         "state": {
           "completed": "Completed",
           "partial": "Partial",

@@ -18,7 +18,7 @@ A [Home Assistant](https://home-assistant.io/) custom integration that connects 
 - **Configurable** — connection settings and prompt options can be changed anytime via Configure
 - **Multiple instances and profiles** — connect Assist agents to the root API, Home Assistant add-on profile routes, or native Hermes multiplexer routes
 - **Diagnostic entities** — one device per config entry exposes authenticated API connectivity, optional health, API latency, and last successful connection
-- **HA request activity** - push-only local counts, durations, outcomes and lifecycle events for requests from this integration
+- **Conversation activity**: push-only counts, durations, results, and lifecycle events for conversation requests originating through this Home Assistant entry (including `conversation.process`), not global Hermes activity
 
 ## Requirements
 
@@ -164,23 +164,27 @@ automation:
           message: Authenticated API connectivity has been off for 2 minutes.
 ```
 
-## HA request activity
+## Conversation activity
 
 The same per-entry device also exposes four push-only entities for conversation requests
-**originating in Home Assistant through this integration**. They are not gateway-wide or
-profile-wide activity and do not observe Telegram, other clients, or work continuing on
-Hermes after HA disconnects. Activity changes immediately on request start and finish;
-it does not wait for the 60-second diagnostics poll and makes no additional API or model
-requests. The counter is local and resets to zero on entry reload. Last-result sensors
-start unavailable again after a reload, rather than claiming a previous result or idle
-work elsewhere.
+**originating in Home Assistant through this integration entry**, including Assist and
+`conversation.process`. They are not gateway-wide or profile-wide activity and do not
+observe Telegram, other clients, or work continuing on Hermes after HA disconnects.
+Changes appear immediately on request start and finish; they do not wait for the
+60-second diagnostics poll and make no additional API or model requests. The count is
+local and resets to zero on entry reload. Last-result sensors start unavailable again
+after a reload, rather than claiming a previous result or idle work elsewhere.
+
+The device name already supplies the `Hermes Agent` prefix for the default entry title.
+Fresh entity IDs below use that title; existing published diagnostic IDs remain unchanged.
+A differently titled entry uses its own title as the prefix.
 
 | Entity | Meaning |
 | ------ | ------- |
-| `binary_sensor.hermes_agent_ha_request_in_progress` | On while at least one HA-origin conversation request is active on this entry. |
-| `sensor.hermes_agent_active_ha_requests` | Concurrent local request count, including overlapping requests. Zero only means none are active through this entry. |
-| `sensor.hermes_agent_last_ha_request_duration` | Elapsed seconds of the most recently finished local request, measured with a monotonic clock. Unavailable until a request finishes. |
-| `sensor.hermes_agent_last_ha_request_outcome` | Most recently finished request: `completed`, `partial`, `failed`, or `cancelled`. Unavailable until a request finishes. |
+| `binary_sensor.hermes_agent_processing_conversation` | On while at least one conversation request through this entry is active. |
+| `sensor.hermes_agent_active_conversation_requests` | Concurrent requests through this entry, including overlaps; zero says nothing about activity elsewhere. |
+| `sensor.hermes_agent_last_conversation_duration` | Elapsed seconds of the most recently finished request, measured with a monotonic clock. Unavailable until a request finishes. |
+| `sensor.hermes_agent_last_conversation_result` | Most recently finished request: `completed`, `partial`, `failed`, or `cancelled`. Unavailable until a request finishes. |
 
 `partial` means the modern ChatLog path delivered some content but the stream then
 failed, so the partial reply was kept without retrying model or tool work. On legacy
@@ -220,7 +224,7 @@ unsuccessfully, filter the terminal event and use only its safe metadata:
 
 ```yaml
 automation:
-  - alias: Hermes HA request did not complete
+  - alias: Hermes conversation request did not complete
     trigger:
       - platform: event
         event_type: hermes_conversation_activity
@@ -230,7 +234,7 @@ automation:
     action:
       - service: persistent_notification.create
         data:
-          title: Hermes HA request
+          title: Hermes conversation request
           message: "Local request ended {{ trigger.event.data.status }}."
 ```
 

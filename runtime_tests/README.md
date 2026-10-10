@@ -1,8 +1,11 @@
 # Real Home Assistant runtime harness
 
 Black-box tests against actual Home Assistant conversation, entity/device registries,
-state machine, polling, activity events and unload/reload. This suite runs separately
-from `tests/` (which uses module stubs); never import `tests.test_support` here.
+state machine, polling, conversation activity events and unload/reload. The fresh
+registry contract checks all four activity names, default and alternate-title entity
+IDs, per-entry unique IDs and unchanged published diagnostics on both HA versions.
+This suite runs separately from `tests/` (which uses module stubs); never import
+`tests.test_support` here.
 Only the external Hermes HTTP/SSE boundary is synthetic: `runtime_tests/loopback.py`
 serves aiohttp on `127.0.0.1`, not a real Hermes/model backend. Pytest disables
 non-loopback sockets; the harness explicitly enables loopback and Unix sockets.

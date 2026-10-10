@@ -876,10 +876,10 @@ class DiagnosticsCoordinatorEntityTests(unittest.IsolatedAsyncioTestCase):
                 "health",
                 "api_latency",
                 "last_successful_connection",
-                "ha_request_in_progress",
-                "active_ha_requests",
-                "last_ha_request_duration",
-                "last_ha_request_outcome",
+                "processing_conversation",
+                "active_conversation_requests",
+                "last_conversation_duration",
+                "last_conversation_result",
             },
         )
 
@@ -899,7 +899,7 @@ class DiagnosticsContractTests(unittest.TestCase):
             "entity": {
                 "binary_sensor": {
                     "api_connectivity": {"name": "API connectivity"},
-                    "ha_request_in_progress": {"name": "HA request in progress"},
+                    "processing_conversation": {"name": "Processing conversation"},
                 },
                 "sensor": {
                     "health": {
@@ -910,10 +910,10 @@ class DiagnosticsContractTests(unittest.TestCase):
                     "last_successful_connection": {
                         "name": "Last successful connection"
                     },
-                    "active_ha_requests": {"name": "Active HA requests"},
-                    "last_ha_request_duration": {"name": "Last HA request duration"},
-                    "last_ha_request_outcome": {
-                        "name": "Last HA request outcome",
+                    "active_conversation_requests": {"name": "Active conversation requests"},
+                    "last_conversation_duration": {"name": "Last conversation duration"},
+                    "last_conversation_result": {
+                        "name": "Last conversation result",
                         "state": {
                             "completed": "Completed", "partial": "Partial",
                             "failed": "Failed", "cancelled": "Cancelled",

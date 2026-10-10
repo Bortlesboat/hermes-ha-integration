@@ -12,15 +12,15 @@ from datetime import datetime, timezone
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-EVENT_ACTIVITY = "hermes_conversation_activity"
-OUTCOMES = ("completed", "partial", "failed", "cancelled")
-ERROR_CATEGORIES = frozenset(
+EVENT_CONVERSATION_ACTIVITY = "hermes_conversation_activity"
+CONVERSATION_RESULTS = ("completed", "partial", "failed", "cancelled")
+ACTIVITY_ERROR_CATEGORIES = frozenset(
     {"auth", "timeout", "redirect", "unsupported", "malformed", "server", "unreachable"}
 )
 
 
 @dataclass(frozen=True, slots=True)
-class RequestToken:
+class ConversationRequestToken:
     """Only locally generated identifiers and timing, never a backend session."""
 
     request_id: str
@@ -28,20 +28,20 @@ class RequestToken:
     started_monotonic: float
 
 
-class RequestActivity:
+class ConversationActivityTracker:
     """Per-entry synchronous observer for local conversation requests."""
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self._hass = hass
         self.entry_id = entry_id
-        self._pending: dict[str, RequestToken] = {}
+        self._pending: dict[str, ConversationRequestToken] = {}
         self._listeners: set[Callable[[], None]] = set()
         self._closed = False
-        self.last_duration: float | None = None
-        self.last_outcome: str | None = None
+        self.last_request_duration_seconds: float | None = None
+        self.last_request_result: str | None = None
 
     @property
-    def active_requests(self) -> int:
+    def active_request_count(self) -> int:
         return len(self._pending)
 
     def subscribe(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -53,7 +53,7 @@ class RequestActivity:
 
     def _notify(self, payload: dict) -> None:
         try:
-            self._hass.bus.async_fire(EVENT_ACTIVITY, payload)
+            self._hass.bus.async_fire(EVENT_CONVERSATION_ACTIVITY, payload)
         except Exception:
             _LOGGER.warning(
                 "Could not publish Hermes request activity event", exc_info=True
@@ -66,10 +66,10 @@ class RequestActivity:
                     "Could not update Hermes request activity observer", exc_info=True
                 )
 
-    def start(self) -> RequestToken | None:
+    def start(self) -> ConversationRequestToken | None:
         if self._closed:
             return None
-        token = RequestToken(
+        token = ConversationRequestToken(
             str(uuid.uuid4()), datetime.now(timezone.utc), time.monotonic()
         )
         self._pending[token.request_id] = token
@@ -79,14 +79,14 @@ class RequestActivity:
                 "request_id": token.request_id,
                 "source": "home_assistant",
                 "status": "started",
-                "active_requests": self.active_requests,
+                "active_requests": self.active_request_count,
             }
         )
         return token
 
     def finish(
         self,
-        token: RequestToken | None,
+        token: ConversationRequestToken | None,
         outcome: str,
         *,
         error_category: str | None = None,
@@ -98,21 +98,24 @@ class RequestActivity:
             or self._pending.get(token.request_id) is not token
         ):
             return False
-        if outcome not in OUTCOMES:
+        if outcome not in CONVERSATION_RESULTS:
             raise ValueError("Invalid request outcome")
         del self._pending[token.request_id]
         duration = max(0.0, time.monotonic() - token.started_monotonic)
-        self.last_duration = duration
-        self.last_outcome = outcome
+        self.last_request_duration_seconds = duration
+        self.last_request_result = outcome
         payload = {
             "entry_id": self.entry_id,
             "request_id": token.request_id,
             "source": "home_assistant",
             "status": outcome,
-            "active_requests": self.active_requests,
+            "active_requests": self.active_request_count,
             "duration_seconds": duration,
         }
-        if isinstance(error_category, str) and error_category in ERROR_CATEGORIES:
+        if (
+            isinstance(error_category, str)
+            and error_category in ACTIVITY_ERROR_CATEGORIES
+        ):
             payload["error_category"] = error_category
         self._notify(payload)
         return True

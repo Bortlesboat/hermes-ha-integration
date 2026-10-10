@@ -4,7 +4,7 @@
 
 ### Added
 
-- Track HA-origin conversation requests per integration entry with four push-only entities and a safe lifecycle event. Counts handle overlap; outcomes distinguish complete, partial, failed and cancelled requests without exposing conversation content.
+- Track conversation requests originating through each Home Assistant integration entry (Assist or `conversation.process`) with four push-only entities named **Processing conversation**, **Active conversation requests**, **Last conversation duration**, and **Last conversation result**, plus a safe lifecycle event. Counts handle overlap; results distinguish completed, partial, failed, and cancelled requests without exposing conversation content. This does not measure global Hermes activity.
 - Detect incomplete streaming responses rather than reporting a truncated SSE response as complete; reject explicit Hermes error/incomplete terminal metadata even when followed by `[DONE]` and sanitize server error details.
 
 ## [1.3.1] - 2026-10-04

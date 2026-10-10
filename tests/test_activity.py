@@ -24,24 +24,33 @@ from tests.test_api import FakeResponse, FakeSession
 
 class ActivityTests(unittest.IsolatedAsyncioTestCase):
     async def test_overlap_reverse_finish_idempotence_and_privacy(self):
-        from custom_components.hermes_conversation.activity import RequestActivity
+        from custom_components.hermes_conversation.activity import (
+            ConversationActivityTracker,
+        )
 
         hass = FakeHass()
-        activity = RequestActivity(hass, "entry-1")
+        conversation_activity = ConversationActivityTracker(hass, "entry-1")
         snapshots = []
-        remove = activity.subscribe(lambda: snapshots.append(activity.active_requests))
-        first = activity.start()
-        second = activity.start()
-        self.assertEqual(activity.active_requests, 2)
-        self.assertEqual(
-            activity.finish(second, "partial", error_category="secret-key"), True
+        remove = conversation_activity.subscribe(
+            lambda: snapshots.append(conversation_activity.active_request_count)
         )
-        self.assertFalse(activity.finish(second, "completed"))
+        first = conversation_activity.start()
+        second = conversation_activity.start()
+        self.assertEqual(conversation_activity.active_request_count, 2)
+        self.assertEqual(
+            conversation_activity.finish(
+                second, "partial", error_category="secret-key"
+            ),
+            True,
+        )
+        self.assertFalse(conversation_activity.finish(second, "completed"))
         # Untrusted categories can be malformed even if internal callers are typed.
-        self.assertTrue(activity.finish(first, "completed", error_category=["secret"]))  # type: ignore[arg-type]
+        self.assertTrue(
+            conversation_activity.finish(first, "completed", error_category=["secret"])
+        )  # type: ignore[arg-type]
         self.assertEqual(snapshots, [1, 2, 1, 0])
-        self.assertEqual(activity.last_outcome, "completed")
-        self.assertGreaterEqual(activity.last_duration, 0)
+        self.assertEqual(conversation_activity.last_request_result, "completed")
+        self.assertGreaterEqual(conversation_activity.last_request_duration_seconds, 0)
         self.assertEqual(
             [e.data["active_requests"] for e in hass.bus.events], [1, 2, 1, 0]
         )
@@ -55,22 +64,26 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         uuid.UUID(first.request_id)
         self.assertNotIn("secret-key", json.dumps([e.data for e in hass.bus.events]))
         remove()
-        activity.start()
+        conversation_activity.start()
         self.assertEqual(snapshots, [1, 2, 1, 0])
 
     async def test_shutdown_blocks_late_finishes_and_event_listener_failures(self):
-        from custom_components.hermes_conversation.activity import RequestActivity
+        from custom_components.hermes_conversation.activity import (
+            ConversationActivityTracker,
+        )
 
         hass = FakeHass()
-        activity = RequestActivity(hass, "entry-1")
-        activity.subscribe(lambda: (_ for _ in ()).throw(RuntimeError("listener")))
+        conversation_activity = ConversationActivityTracker(hass, "entry-1")
+        conversation_activity.subscribe(
+            lambda: (_ for _ in ()).throw(RuntimeError("listener"))
+        )
         hass.bus.fail = True
-        token = activity.start()
-        self.assertEqual(activity.active_requests, 1)
-        activity.shutdown()
-        self.assertEqual(activity.active_requests, 0)
-        self.assertFalse(activity.finish(token, "completed"))
-        self.assertIsNone(activity.start())
+        token = conversation_activity.start()
+        self.assertEqual(conversation_activity.active_request_count, 1)
+        conversation_activity.shutdown()
+        self.assertEqual(conversation_activity.active_request_count, 0)
+        self.assertFalse(conversation_activity.finish(token, "completed"))
+        self.assertIsNone(conversation_activity.start())
 
     async def test_entry_unload_recreates_empty_tracker(self):
         from custom_components.hermes_conversation import (
@@ -82,25 +95,27 @@ class ActivityTests(unittest.IsolatedAsyncioTestCase):
         hass = FakeHass()
         entry = FakeConfigEntry()
         await async_setup_entry(hass, entry)
-        old = hass.data[DOMAIN][entry.entry_id]["activity"]
+        old = hass.data[DOMAIN][entry.entry_id]["conversation_activity"]
         token = old.start()
         await async_unload_entry(hass, entry)
         await entry.async_execute_unload()
-        self.assertEqual(old.active_requests, 0)
-        self.assertEqual(old.last_outcome, "cancelled")
+        self.assertEqual(old.active_request_count, 0)
+        self.assertEqual(old.last_request_result, "cancelled")
         self.assertFalse(old.finish(token, "completed"))
         await async_setup_entry(hass, entry)
-        new = hass.data[DOMAIN][entry.entry_id]["activity"]
+        new = hass.data[DOMAIN][entry.entry_id]["conversation_activity"]
         self.assertIsNot(new, old)
-        self.assertIsNone(new.last_outcome)
-        self.assertEqual(new.active_requests, 0)
+        self.assertIsNone(new.last_request_result)
+        self.assertEqual(new.active_request_count, 0)
         await async_unload_entry(hass, entry)
         await entry.async_execute_unload()
 
 
 class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        from custom_components.hermes_conversation.activity import RequestActivity
+        from custom_components.hermes_conversation.activity import (
+            ConversationActivityTracker,
+        )
         from custom_components.hermes_conversation.conversation import (
             HermesConversationAgent,
         )
@@ -109,8 +124,12 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         self.entry = FakeConfigEntry(
             options={"prompt": "", "enable_session_reuse": False}
         )
-        self.activity = RequestActivity(self.hass, self.entry.entry_id)
-        self.hass.data[DOMAIN] = {self.entry.entry_id: {"activity": self.activity}}
+        self.conversation_activity = ConversationActivityTracker(
+            self.hass, self.entry.entry_id
+        )
+        self.hass.data[DOMAIN] = {
+            self.entry.entry_id: {"conversation_activity": self.conversation_activity}
+        }
         self.agent_type = HermesConversationAgent
 
     def agent(self, client):
@@ -150,8 +169,8 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         client.async_stream_message = broken
         result = await self.agent(client).async_process(FakeConversationInput("second"))
         self.assertIsNotNone(result.response.error)
-        self.assertEqual(self.activity.last_outcome, "failed")
-        self.assertEqual(self.activity.active_requests, 0)
+        self.assertEqual(self.conversation_activity.last_request_result, "failed")
+        self.assertEqual(self.conversation_activity.active_request_count, 0)
         self.assertEqual(
             self.hass.bus.events[-1].data.get("error_category"), "unreachable"
         )
@@ -175,7 +194,7 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
                         ]
                     )
                     client = HermesApiClient(session, host="agent.local", port=8443)
-                    activity = self.activity
+                    conversation_activity = self.conversation_activity
                     with mock.patch.object(
                         conversation_module,
                         "async_get_chat_log",
@@ -185,7 +204,9 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
                             FakeConversationInput("private turn")
                         )
                     self.assertIsNotNone(result.response.error)
-                    self.assertEqual(activity.last_outcome, "failed")
+                    self.assertEqual(
+                        conversation_activity.last_request_result, "failed"
+                    )
                     self.assertEqual(
                         len(session.calls),
                         1,
@@ -261,7 +282,9 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
                         expected = (
                             "partial" if prior_content and not legacy else "failed"
                         )
-                        self.assertEqual(self.activity.last_outcome, expected)
+                        self.assertEqual(
+                            self.conversation_activity.last_request_result, expected
+                        )
                         self.assertEqual(
                             self.hass.bus.events[-1].data["status"], expected
                         )
@@ -309,7 +332,7 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
                 FakeConversationInput("private turn")
             )
         self.assertIsNotNone(result.response.error)
-        self.assertEqual(self.activity.last_outcome, "failed")
+        self.assertEqual(self.conversation_activity.last_request_result, "failed")
         self.assertEqual(client.calls, ["stream"])
 
     async def test_modern_partial_after_content_and_legacy_failure(self):
@@ -325,7 +348,7 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
             FakeConversationInput("secret"), FakeChatLog("chat", "secret")
         )
         self.assertEqual(result.response.speech["plain"]["speech"], "some content")
-        self.assertEqual(self.activity.last_outcome, "partial")
+        self.assertEqual(self.conversation_activity.last_request_result, "partial")
         self.assertEqual(
             self.hass.bus.events[-1].data.get("error_category"), "unreachable"
         )
@@ -336,7 +359,7 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(conversation_module, "async_get_chat_log", None):
             result = await agent.async_process(FakeConversationInput("secret"))
         self.assertIsNotNone(result.response.error)
-        self.assertEqual(self.activity.last_outcome, "failed")
+        self.assertEqual(self.conversation_activity.last_request_result, "failed")
 
     async def test_concurrent_completion_and_cancellation(self):
         entered = asyncio.Event()
@@ -354,9 +377,9 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         agent = self.agent(Client())
         slow = asyncio.create_task(agent.async_process(FakeConversationInput("slow")))
         await entered.wait()
-        self.assertEqual(self.activity.active_requests, 1)
+        self.assertEqual(self.conversation_activity.active_request_count, 1)
         await agent.async_process(FakeConversationInput("fast"))
-        self.assertEqual(self.activity.active_requests, 1)
+        self.assertEqual(self.conversation_activity.active_request_count, 1)
         release.set()
         await slow
         self.assertEqual(
@@ -369,8 +392,8 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         slow.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await slow
-        self.assertEqual(self.activity.last_outcome, "cancelled")
-        self.assertEqual(self.activity.active_requests, 0)
+        self.assertEqual(self.conversation_activity.last_request_result, "cancelled")
+        self.assertEqual(self.conversation_activity.active_request_count, 0)
 
     async def test_incomplete_sse_after_content_is_not_success(self):
         from tests.test_api import FakeResponse, FakeSession
@@ -390,19 +413,25 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_activity_entities_push_without_diagnostic_refresh(self):
         from custom_components.hermes_conversation.binary_sensor import (
-            HermesRequestInProgressBinarySensor,
+            HermesConversationProcessingBinarySensor,
         )
         from custom_components.hermes_conversation.sensor import (
-            HermesActiveRequestsSensor,
-            HermesLastRequestDurationSensor,
-            HermesLastRequestOutcomeSensor,
+            HermesActiveConversationRequestsSensor,
+            HermesLastConversationDurationSensor,
+            HermesLastConversationResultSensor,
         )
 
         entities = [
-            HermesRequestInProgressBinarySensor(self.activity, self.entry),
-            HermesActiveRequestsSensor(self.activity, self.entry),
-            HermesLastRequestDurationSensor(self.activity, self.entry),
-            HermesLastRequestOutcomeSensor(self.activity, self.entry),
+            HermesConversationProcessingBinarySensor(
+                self.conversation_activity, self.entry
+            ),
+            HermesActiveConversationRequestsSensor(
+                self.conversation_activity, self.entry
+            ),
+            HermesLastConversationDurationSensor(
+                self.conversation_activity, self.entry
+            ),
+            HermesLastConversationResultSensor(self.conversation_activity, self.entry),
         ]
         for entity in entities:
             await entity.async_added_to_hass()
@@ -415,16 +444,16 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entities[1].native_value, 0)
         self.assertFalse(entities[2].available)
         self.assertFalse(entities[3].available)
-        token = self.activity.start()
+        token = self.conversation_activity.start()
         self.assertTrue(entities[0].is_on)
         self.assertEqual(entities[1].native_value, 1)
-        self.activity.finish(token, "completed")
+        self.conversation_activity.finish(token, "completed")
         self.assertEqual(entities[3].native_value, "completed")
         self.assertGreaterEqual(entities[2].native_value, 0)
         self.assertEqual([entity.written_states for entity in entities], [2] * 4)
         for entity in entities:
             await entity.async_will_remove_from_hass()
-        self.activity.start()
+        self.conversation_activity.start()
         self.assertEqual([entity.written_states for entity in entities], [2] * 4)
 
     async def test_subscription_telemetry_failure_does_not_retry_conversation(self):
@@ -438,14 +467,16 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
 
         client = Client()
         self.hass.bus.fail = True
-        self.activity.subscribe(lambda: (_ for _ in ()).throw(RuntimeError("observer")))
+        self.conversation_activity.subscribe(
+            lambda: (_ for _ in ()).throw(RuntimeError("observer"))
+        )
         result = await self.agent(client).async_process(
             FakeConversationInput("private")
         )
         self.assertEqual(result.response.speech["plain"]["speech"], "ok")
         self.assertEqual(client.calls, 1)
-        self.assertEqual(self.activity.active_requests, 0)
-        self.assertEqual(self.activity.last_outcome, "completed")
+        self.assertEqual(self.conversation_activity.active_request_count, 0)
+        self.assertEqual(self.conversation_activity.last_request_result, "completed")
 
     async def test_unexpected_error_and_unloaded_tracker(self):
         agent = self.agent(SimpleNamespace(last_session_id=None))
@@ -454,8 +485,8 @@ class ConversationActivityTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await agent.async_process(FakeConversationInput("secret"))
         self.assertIsNotNone(result.response.error)
-        self.assertEqual(self.activity.last_outcome, "failed")
-        self.activity.shutdown()
+        self.assertEqual(self.conversation_activity.last_request_result, "failed")
+        self.conversation_activity.shutdown()
         before = len(self.hass.bus.events)
         await agent.async_process(FakeConversationInput("secret"))
         self.assertEqual(len(self.hass.bus.events), before)

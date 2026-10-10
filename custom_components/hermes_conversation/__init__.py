@@ -9,7 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .activity import RequestActivity
+from .activity import ConversationActivityTracker
 from .api import HermesApiClient
 from .compat import entry_value, resolve_connection_config
 from .const import DEFAULT_TIMEOUT, DOMAIN, LEGACY_CONF_MODEL, LEGACY_CONF_TIMEOUT
@@ -44,14 +44,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     session_map: dict[str, dict[str, object]] = {}
     coordinator = HermesDiagnosticsCoordinator(hass, entry, client)
-    activity = RequestActivity(hass, entry.entry_id)
-    entry.async_on_unload(activity.shutdown)
+    conversation_activity = ConversationActivityTracker(hass, entry.entry_id)
+    entry.async_on_unload(conversation_activity.shutdown)
 
     hass.data[DOMAIN][entry.entry_id] = {
         "client": client,
         "sessions": session_map,
         "coordinator": coordinator,
-        "activity": activity,
+        "conversation_activity": conversation_activity,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
