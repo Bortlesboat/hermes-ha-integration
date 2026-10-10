@@ -36,6 +36,9 @@
     "binary_sensor": {
       "api_connectivity": {
         "name": "API connectivity"
+      },
+      "ha_request_in_progress": {
+        "name": "HA request in progress"
       }
     },
     "sensor": {
@@ -51,6 +54,21 @@
       },
       "last_successful_connection": {
         "name": "Last successful connection"
+      },
+      "active_ha_requests": {
+        "name": "Active HA requests"
+      },
+      "last_ha_request_duration": {
+        "name": "Last HA request duration"
+      },
+      "last_ha_request_outcome": {
+        "name": "Last HA request outcome",
+        "state": {
+          "completed": "Completed",
+          "partial": "Partial",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        }
       }
     }
   },

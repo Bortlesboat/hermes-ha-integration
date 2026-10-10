@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
-from .entity import HermesDiagnosticsEntity
+from .entity import HermesActivityEntity, HermesDiagnosticsEntity
 
 
 async def async_setup_entry(
@@ -23,7 +23,22 @@ async def async_setup_entry(
 ) -> None:
     """Set up Hermes diagnostic binary sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    async_add_entities([HermesApiConnectivityBinarySensor(coordinator, entry)])
+    activity = hass.data[DOMAIN][entry.entry_id]["activity"]
+    async_add_entities([
+        HermesApiConnectivityBinarySensor(coordinator, entry),
+        HermesRequestInProgressBinarySensor(activity, entry),
+    ])
+
+
+class HermesRequestInProgressBinarySensor(HermesActivityEntity, BinarySensorEntity):
+    """Whether any local HA request is currently active."""
+
+    def __init__(self, activity, entry: ConfigEntry) -> None:
+        super().__init__(activity, entry, "ha_request_in_progress")
+
+    @property
+    def is_on(self) -> bool:
+        return self.activity.active_requests > 0
 
 
 class HermesApiConnectivityBinarySensor(HermesDiagnosticsEntity, BinarySensorEntity):

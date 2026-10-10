@@ -6,6 +6,7 @@ import unittest
 from tests.test_support import FakeClientTimeout
 from custom_components.hermes_conversation.api import (
     HermesApiClient,
+    HermesApiError,
     HermesAuthError,
     HermesConnectionError,
     HermesStreamSetupError,
@@ -631,15 +632,132 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(parts, ["Done"])
 
-    async def test_streaming_rejected_status_raises_setup_error(self):
-        session = FakeSession([FakeResponse(status=400, text_data="stream unsupported")])
-        client = HermesApiClient(session=session, host="agent.local", port=8443)
+    async def test_stream_terminal_failure_and_incomplete_are_sanitized(self):
+        terminal_cases = (
+            {"choices": [{"finish_reason": "error", "delta": {}}],
+             "hermes": {"failed": True, "error": "private-server-detail"},
+             "error": "private-server-detail"},
+            {"choices": [{"finish_reason": "length", "delta": {}}],
+             "hermes": {"completed": False, "partial": True,
+                        "error": "private-server-detail"}},
+            {"choices": [{"finish_reason": "stop", "delta": {}}],
+             "hermes": {"completed": False}},
+            {"choices": [{"finish_reason": "stop", "delta": {}}],
+             "hermes": {"failed": True}},
+            {"choices": [{"finish_reason": "stop", "delta": {}}],
+             "error": "private-server-detail"},
+            {"choices": [{"finish_reason": "length", "delta": {}}]},
+        )
+        for terminal in terminal_cases:
+            for prior_content in (False, True):
+                with self.subTest(terminal=terminal, prior_content=prior_content):
+                    chunks = []
+                    if prior_content:
+                        chunks.append('data: ' + json.dumps({
+                            "choices": [{"delta": {"content": "safe reply"}}]
+                        }) + '\n\n')
+                    chunks += [
+                        'data: ' + json.dumps(terminal) + '\n\n',
+                        'data: [DONE]\n\n',
+                    ]
+                    session = FakeSession([FakeResponse(chunks=chunks)])
+                    client = HermesApiClient(session, 'agent.local', 8443)
+                    delivered = []
+                    with self.assertRaises(HermesConnectionError) as caught:
+                        async for part in client.async_stream_message([{"role": "user", "content": "hi"}]):
+                            delivered.append(part)
+                    self.assertEqual(delivered, ["safe reply"] if prior_content else [])
+                    self.assertEqual(caught.exception.error_category, "server")
+                    self.assertNotIn("private-server-detail", str(caught.exception))
+                    self.assertEqual(len(session.calls), 1)
 
-        with self.assertRaises(HermesStreamSetupError):
-            async for _part in client.async_stream_message(
-                [{"role": "user", "content": "hi"}]
-            ):
+    async def test_stream_error_event_is_not_a_successful_done(self):
+        chunks = [
+            'event: error\n',
+            'data: ' + json.dumps({"error": "private-server-detail"}) + '\n\n',
+            'data: [DONE]\n\n',
+        ]
+        client = HermesApiClient(FakeSession([FakeResponse(chunks=chunks)]), "agent.local", 8443)
+        with self.assertRaises(HermesConnectionError) as caught:
+            async for _ in client.async_stream_message([{"role": "user", "content": "hi"}]):
                 pass
+        self.assertEqual(caught.exception.error_category, "server")
+        self.assertNotIn("private-server-detail", str(caught.exception))
+
+    async def test_stream_does_not_deliver_content_after_error_terminal(self):
+        chunks = [
+            'data: ' + json.dumps({"choices": [{"delta": {}, "finish_reason": "error"}]}) + '\n\n',
+            'data: ' + json.dumps({"choices": [{"delta": {"content": "should not speak"}}]}) + '\n\n',
+            'data: [DONE]\n\n',
+        ]
+        session = FakeSession([FakeResponse(chunks=chunks)])
+        client = HermesApiClient(session, "agent.local", 8443)
+        delivered = []
+        with self.assertRaises(HermesConnectionError):
+            async for part in client.async_stream_message([{"role": "user", "content": "hi"}]):
+                delivered.append(part)
+        self.assertEqual(delivered, [])
+
+    async def test_nonstream_terminal_failure_and_incomplete_are_sanitized(self):
+        for reason, hermes, top_error in (
+            ("error", {"failed": True, "error": "private-server-detail"}, None),
+            ("length", {"partial": True, "completed": False}, None),
+            ("stop", {"completed": False}, None),
+            ("stop", {}, "private-server-detail"),
+            ("length", {}, None),
+        ):
+            with self.subTest(reason=reason, hermes=hermes, top_error=top_error):
+                payload = {"choices": [{"finish_reason": reason,
+                                        "message": {"content": "must not succeed"}}],
+                           "hermes": hermes}
+                if top_error:
+                    payload["error"] = top_error
+                session = FakeSession([FakeResponse(json_data=payload)])
+                client = HermesApiClient(session, 'agent.local', 8443)
+                with self.assertRaises(HermesConnectionError) as caught:
+                    await client.async_send_message([{"role": "user", "content": "hi"}])
+                self.assertEqual(caught.exception.error_category, "server")
+                self.assertNotIn("private-server-detail", str(caught.exception))
+                self.assertEqual(len(session.calls), 1)
+
+    async def test_nonstream_completed_false_header_is_not_success(self):
+        session = FakeSession([FakeResponse(
+            headers={"X-Hermes-Completed": "false"},
+            json_data={"choices": [{"finish_reason": "stop",
+                                    "message": {"content": "not complete"}}]},
+        )])
+        client = HermesApiClient(session, "agent.local", 8443)
+        with self.assertRaises(HermesConnectionError) as caught:
+            await client.async_send_message([{"role": "user", "content": "hi"}])
+        self.assertEqual(caught.exception.error_category, "server")
+        self.assertEqual(len(session.calls), 1)
+
+    async def test_successful_terminal_reason_still_completes(self):
+        terminal = {"choices": [{"finish_reason": "stop", "delta": {}}],
+                    "hermes": {"completed": True, "partial": False, "failed": False}}
+        session = FakeSession([FakeResponse(chunks=[
+            'data: ' + json.dumps({"choices": [{"delta": {"content": "safe"}}]}) + '\n\n',
+            'data: ' + json.dumps(terminal) + '\n\n',
+            'data: [DONE]\n\n',
+        ])])
+        client = HermesApiClient(session, "agent.local", 8443)
+        parts = [part async for part in client.async_stream_message(
+            [{"role": "user", "content": "hi"}])]
+        self.assertEqual(parts, ["safe"])
+
+    async def test_streaming_http_status_is_ambiguous_not_setup_error(self):
+        for status in (400, 429, 500, 503):
+            with self.subTest(status=status):
+                session = FakeSession([FakeResponse(status=status, text_data="synthetic failure")])
+                client = HermesApiClient(session=session, host="agent.local", port=8443)
+
+                with self.assertRaises(HermesApiError) as caught:
+                    async for _part in client.async_stream_message(
+                        [{"role": "user", "content": "hi"}]
+                    ):
+                        pass
+                self.assertNotIsInstance(caught.exception, HermesStreamSetupError)
+                self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":

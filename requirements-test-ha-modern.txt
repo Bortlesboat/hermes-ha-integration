@@ -1,0 +1,14 @@
+# Test-only real Home Assistant modern runtime (separate from HA 2024.12).
+# Requires Python >=3.14.2; validated with Python 3.14.7.
+# The pytest plugin pins HA 2026.9.4, pytest 9.0.3 and its own test dependencies.
+# These are the extra component imports needed by conversation setup in this harness;
+# do not add them to the integration manifest.
+pytest-homeassistant-custom-component==0.13.367
+homeassistant==2026.9.4
+hassil==3.12.1
+home-assistant-intents==2026.8.28
+gazetteer-matcher==1.1.0
+mutagen==1.48.1
+ha-ffmpeg==3.2.2
+pymicro-vad==2.1.0
+pyspeex-noise==2.0.1

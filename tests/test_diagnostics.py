@@ -867,7 +867,7 @@ class DiagnosticsCoordinatorEntityTests(unittest.IsolatedAsyncioTestCase):
         await binary_module.async_setup_entry(
             hass, entry, lambda entities: added.extend(entities)
         )
-        self.assertEqual(len(added), 4)
+        self.assertEqual(len(added), 8)
         keys = {entity.translation_key for entity in added}
         self.assertEqual(
             keys,
@@ -876,6 +876,10 @@ class DiagnosticsCoordinatorEntityTests(unittest.IsolatedAsyncioTestCase):
                 "health",
                 "api_latency",
                 "last_successful_connection",
+                "ha_request_in_progress",
+                "active_ha_requests",
+                "last_ha_request_duration",
+                "last_ha_request_outcome",
             },
         )
 
@@ -893,7 +897,10 @@ class DiagnosticsContractTests(unittest.TestCase):
         )
         expected = {
             "entity": {
-                "binary_sensor": {"api_connectivity": {"name": "API connectivity"}},
+                "binary_sensor": {
+                    "api_connectivity": {"name": "API connectivity"},
+                    "ha_request_in_progress": {"name": "HA request in progress"},
+                },
                 "sensor": {
                     "health": {
                         "name": "Health",
@@ -902,6 +909,15 @@ class DiagnosticsContractTests(unittest.TestCase):
                     "api_latency": {"name": "API latency"},
                     "last_successful_connection": {
                         "name": "Last successful connection"
+                    },
+                    "active_ha_requests": {"name": "Active HA requests"},
+                    "last_ha_request_duration": {"name": "Last HA request duration"},
+                    "last_ha_request_outcome": {
+                        "name": "Last HA request outcome",
+                        "state": {
+                            "completed": "Completed", "partial": "Partial",
+                            "failed": "Failed", "cancelled": "Cancelled",
+                        },
                     },
                 },
             }

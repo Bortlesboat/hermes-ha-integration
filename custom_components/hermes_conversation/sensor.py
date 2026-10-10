@@ -14,8 +14,9 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from .activity import OUTCOMES
 from .const import DOMAIN, HEALTH_STATUSES
-from .entity import HermesDiagnosticsEntity
+from .entity import HermesActivityEntity, HermesDiagnosticsEntity
 
 
 async def async_setup_entry(
@@ -25,13 +26,65 @@ async def async_setup_entry(
 ) -> None:
     """Set up Hermes diagnostic sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    activity = hass.data[DOMAIN][entry.entry_id]["activity"]
     async_add_entities(
         [
             HermesHealthSensor(coordinator, entry),
             HermesApiLatencySensor(coordinator, entry),
             HermesLastSuccessfulConnectionSensor(coordinator, entry),
+            HermesActiveRequestsSensor(activity, entry),
+            HermesLastRequestDurationSensor(activity, entry),
+            HermesLastRequestOutcomeSensor(activity, entry),
         ]
     )
+
+
+class HermesActiveRequestsSensor(HermesActivityEntity, SensorEntity):
+    """Number of HA-origin requests in flight."""
+
+    def __init__(self, activity, entry: ConfigEntry) -> None:
+        super().__init__(activity, entry, "active_ha_requests")
+
+    @property
+    def native_value(self) -> int:
+        return self.activity.active_requests
+
+
+class HermesLastRequestDurationSensor(HermesActivityEntity, SensorEntity):
+    """Elapsed local wall-clock time of most recently finished HA request."""
+
+    _attr_native_unit_of_measurement = "s"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, activity, entry: ConfigEntry) -> None:
+        super().__init__(activity, entry, "last_ha_request_duration")
+
+    @property
+    def available(self) -> bool:
+        return self.activity.last_duration is not None
+
+    @property
+    def native_value(self) -> float | None:
+        return self.activity.last_duration
+
+
+class HermesLastRequestOutcomeSensor(HermesActivityEntity, SensorEntity):
+    """Outcome of most recently finished HA request."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = list(OUTCOMES)
+
+    def __init__(self, activity, entry: ConfigEntry) -> None:
+        super().__init__(activity, entry, "last_ha_request_outcome")
+
+    @property
+    def available(self) -> bool:
+        return self.activity.last_outcome is not None
+
+    @property
+    def native_value(self) -> str | None:
+        return self.activity.last_outcome
 
 
 class HermesHealthSensor(HermesDiagnosticsEntity, SensorEntity):

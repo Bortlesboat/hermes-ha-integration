@@ -7,6 +7,7 @@ Home Assistant stubs. Bind is 127.0.0.1 only.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -111,6 +112,14 @@ class HermesLoopbackApi:
     native_canary_status: int = 404
     block_requests: asyncio.Event | None = None
     request_started: asyncio.Event = field(default_factory=asyncio.Event)
+    chat_response: str = "synthetic response"
+    chat_partial: bool = False
+    chat_status: int = 200
+    chat_finish_reason: str | None = None
+    chat_terminal_hermes: dict[str, Any] | None = None
+    chat_terminal_error: str | None = None
+    block_chat: asyncio.Event | None = None
+    chat_started: asyncio.Event = field(default_factory=asyncio.Event)
     _runner: web.AppRunner | None = field(default=None, init=False, repr=False)
     _site: web.TCPSite | None = field(default=None, init=False, repr=False)
 
@@ -191,6 +200,8 @@ class HermesLoopbackApi:
                 fixture = bundle.models
             elif remainder in {"/health/detailed", "/health/detailed/"}:
                 fixture = bundle.detailed
+            elif remainder in {"/v1/chat/completions", "/v1/chat/completions/"}:
+                fixture = ("chat.synthetic", self.chat_status, {"error": "synthetic error"})
 
         label = _unpack(fixture)[0] if fixture is not None else None
         self.requests.append(
@@ -203,6 +214,28 @@ class HermesLoopbackApi:
         )
 
         self.request_started.set()
+        if remainder in {"/v1/chat/completions", "/v1/chat/completions/"}:
+            self.chat_started.set()
+            if self.block_chat is not None:
+                await self.block_chat.wait()
+            if self.chat_status != 200:
+                return web.json_response({"error": "synthetic failure"}, status=self.chat_status)
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            delta = json.dumps({"choices": [{"delta": {"content": self.chat_response}}]})
+            if self.chat_response:
+                await response.write(f"data: {delta}\n\n".encode())
+            if self.chat_finish_reason is not None or self.chat_terminal_hermes is not None or self.chat_terminal_error is not None:
+                terminal: dict[str, Any] = {"choices": [{"delta": {}, "finish_reason": self.chat_finish_reason}]}
+                if self.chat_terminal_hermes is not None:
+                    terminal["hermes"] = self.chat_terminal_hermes
+                if self.chat_terminal_error is not None:
+                    terminal["error"] = self.chat_terminal_error
+                await response.write(f"data: {json.dumps(terminal)}\n\n".encode())
+            if not self.chat_partial:
+                await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
         if self.block_requests is not None:
             await self.block_requests.wait()
 
