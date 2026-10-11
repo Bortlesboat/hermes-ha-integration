@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
+import aiohttp
 import pytest
 from homeassistant.components import conversation
 from homeassistant.const import STATE_UNAVAILABLE
@@ -12,6 +14,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.hermes_conversation.api import HermesApiClient, HermesConnectionError
 from custom_components.hermes_conversation.const import (
     CONF_API_KEY,
     CONF_HOST,
@@ -301,6 +304,71 @@ async def test_server_terminal_error_and_incomplete_real_ha_no_replay(
         )
     finally:
         remove()
+
+
+async def test_empty_top_level_error_real_ha_no_replay(
+    hass_ready: HomeAssistant,
+    hermes_api: HermesLoopbackApi,
+):
+    hass = hass_ready
+    entry = await _setup(hass, hermes_api)
+    outcome = _id(hass, "sensor", entry.entry_id, "last_conversation_result")
+    modern = getattr(conversation, "ChatLog", None) is not None and hasattr(
+        conversation, "async_get_chat_log"
+    )
+    events = []
+    remove = hass.bus.async_listen("hermes_conversation_activity", events.append)
+    try:
+        for error in ({}, None, "absent"):
+            for prior_content in (True, False):
+                hermes_api.chat_response = "synthetic partial speech" if prior_content else ""
+                terminal: dict[str, Any] = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+                if error != "absent":
+                    terminal["error"] = error
+                hermes_api.chat_terminal_body = terminal
+                before = hermes_api.count_paths("/v1/chat/completions")
+                result = await _process(hass, entry, "private empty error prompt")
+                await hass.async_block_till_done()
+                assert hermes_api.count_paths("/v1/chat/completions") == before + 1
+                failure = error == {}
+                expected = ("partial" if prior_content and modern else "failed") if failure else "completed"
+                assert hass.states.get(outcome).state == expected
+                assert [e.data["status"] for e in events[-2:]] == ["started", expected]
+                if failure:
+                    assert events[-1].data["error_category"] == "server"
+                    if expected == "partial":
+                        assert result.response.speech["plain"]["speech"] == "synthetic partial speech"
+                    else:
+                        assert result.response.response_type == conversation.intent.IntentResponseType.ERROR
+                else:
+                    assert events[-1].data.get("error_category") is None
+                    assert result.response.response_type != conversation.intent.IntentResponseType.ERROR
+        _assert_private_correlated_events(events, entry.entry_id, "private empty error prompt")
+    finally:
+        remove()
+
+
+async def test_nonstream_empty_error_real_aiohttp_client(
+    hermes_api: HermesLoopbackApi,
+):
+    async with aiohttp.ClientSession() as session:
+        client = HermesApiClient(session, "127.0.0.1", hermes_api.port, use_ssl=False)
+        for error_present in (True, False):
+            body: dict[str, Any] = {"choices": [{"finish_reason": "stop", "message": {"content": "safe"}}]}
+            if error_present:
+                body["error"] = {}
+            hermes_api.chat_http_body = body
+            before = hermes_api.count_paths("/v1/chat/completions")
+            if error_present:
+                with pytest.raises(HermesConnectionError) as caught:
+                    await client.async_send_message([{"role": "user", "content": "private"}])
+                assert caught.value.error_category == "server"
+                assert str(caught.value) == "Hermes API reported an incomplete chat response"
+            else:
+                assert (await client.async_send_message([{"role": "user", "content": "private"}])).text == "safe"
+            assert hermes_api.count_paths("/v1/chat/completions") == before + 1
+        hermes_api.chat_http_body = {"choices": [{"finish_reason": "stop", "message": {"content": "safe"}}], "error": None}
+        assert (await client.async_send_message([{"role": "user", "content": "private"}])).text == "safe"
 
 
 async def test_server_terminal_error_without_done_real_ha_no_replay(

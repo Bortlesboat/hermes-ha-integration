@@ -515,7 +515,7 @@ def _chat_completion_failed(data: Any) -> bool:
         or hermes.get("failed") is True
     ):
         return True
-    return bool(data.get("error"))
+    return "error" in data and data["error"] is not None
 
 
 def _transport_error_category(err: BaseException) -> str:

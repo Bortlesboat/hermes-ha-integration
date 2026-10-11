@@ -118,6 +118,8 @@ class HermesLoopbackApi:
     chat_finish_reason: str | None = None
     chat_terminal_hermes: dict[str, Any] | None = None
     chat_terminal_error: str | None = None
+    chat_terminal_body: dict[str, Any] | None = None
+    chat_http_body: dict[str, Any] | None = None
     chat_error_event: str | None = None
     block_chat: asyncio.Event | None = None
     chat_started: asyncio.Event = field(default_factory=asyncio.Event)
@@ -221,12 +223,16 @@ class HermesLoopbackApi:
                 await self.block_chat.wait()
             if self.chat_status != 200:
                 return web.json_response({"error": "synthetic failure"}, status=self.chat_status)
+            if self.chat_http_body is not None and not (await request.json()).get("stream"):
+                return web.json_response(self.chat_http_body)
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
             delta = json.dumps({"choices": [{"delta": {"content": self.chat_response}}]})
             if self.chat_response:
                 await response.write(f"data: {delta}\n\n".encode())
-            if self.chat_finish_reason is not None or self.chat_terminal_hermes is not None or self.chat_terminal_error is not None:
+            if self.chat_terminal_body is not None:
+                await response.write(f"data: {json.dumps(self.chat_terminal_body)}\n\n".encode())
+            elif self.chat_finish_reason is not None or self.chat_terminal_hermes is not None or self.chat_terminal_error is not None:
                 terminal: dict[str, Any] = {"choices": [{"delta": {}, "finish_reason": self.chat_finish_reason}]}
                 if self.chat_terminal_hermes is not None:
                     terminal["hermes"] = self.chat_terminal_hermes
