@@ -60,7 +60,11 @@ class HermesAuthError(HermesApiError):
 
 
 class HermesStreamSetupError(HermesApiError):
-    """Streaming request was rejected before a stream was established."""
+    """Explicitly known pre-dispatch streaming rejection from an adapter.
+
+    An HTTP failure from a submitted chat POST is never proof of pre-dispatch
+    rejection: the server may already have executed model or tool work.
+    """
 
 
 @dataclass(slots=True)
@@ -361,14 +365,16 @@ class HermesApiClient:
                 timeout=aiohttp.ClientTimeout(total=self._request_timeout),
                 ssl=self._ssl,
             ) as resp:
-                if resp.status == 401:
+                if resp.status in (401, 403):
                     raise HermesAuthError("Invalid API key")
                 if resp.status >= 400:
-                    body = await resp.text()
-                    raise HermesApiError(
-                        f"API error {resp.status}: {body[:500]}"
-                    )
+                    raise self._classify_status_error(resp.status)
                 data = await resp.json()
+                if _chat_completion_failed(data) or resp.headers.get("X-Hermes-Completed", "").lower() == "false":
+                    raise HermesConnectionError(
+                        "Hermes API reported an incomplete chat response",
+                        error_category=ERROR_CATEGORY_SERVER,
+                    )
                 resolved_session_id = resp.headers.get("X-Hermes-Session-Id") or session_id
                 self._last_session_id = resolved_session_id
                 return HermesApiResult(
@@ -379,7 +385,8 @@ class HermesApiClient:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise HermesConnectionError(
-                f"Connection error: {err}"
+                "Connection error",
+                error_category=_transport_error_category(err),
             ) from err
 
     async def async_stream_message(
@@ -406,58 +413,82 @@ class HermesApiClient:
                 ),
                 ssl=self._ssl,
             ) as resp:
-                if resp.status == 401:
+                if resp.status in (401, 403):
                     raise HermesAuthError("Invalid API key")
                 if resp.status >= 400:
-                    body = await resp.text()
-                    raise HermesStreamSetupError(
-                        f"API error {resp.status}: {body[:500]}"
-                    )
+                    raise self._classify_status_error(resp.status)
 
                 self._last_session_id = resp.headers.get("X-Hermes-Session-Id") or session_id
 
                 # Parse SSE stream
                 buffer = ""
                 event_name = "message"
-                async for chunk in resp.content.iter_any():
-                    buffer += chunk.decode("utf-8", errors="replace")
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.rstrip("\r")
+                terminal_failed = False
+                try:
+                    async for chunk in resp.content.iter_any():
+                        buffer += chunk.decode("utf-8", errors="replace")
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.rstrip("\r")
 
-                        if not line:
-                            event_name = "message"
-                            continue
-                        line = line.strip()
-                        if line.startswith(":"):
-                            continue
-                        if line.startswith("event:"):
-                            event_name = line[6:].strip() or "message"
-                            continue
-                        if line == "data: [DONE]":
-                            return
-                        if not line.startswith("data: "):
-                            continue
-                        if event_name != "message":
-                            continue
+                            if not line:
+                                event_name = "message"
+                                continue
+                            line = line.strip()
+                            if line.startswith(":"):
+                                continue
+                            if line.startswith("event:"):
+                                event_name = line[6:].strip() or "message"
+                                continue
+                            if line == "data: [DONE]":
+                                if terminal_failed:
+                                    raise HermesConnectionError(
+                                        "Hermes API reported an incomplete chat response",
+                                        error_category=ERROR_CATEGORY_SERVER,
+                                    )
+                                return
+                            if not line.startswith("data: "):
+                                continue
+                            if event_name == "error":
+                                terminal_failed = True
+                                continue
+                            if event_name != "message" or terminal_failed:
+                                continue
 
-                        try:
-                            data = json.loads(line[6:])
-                            delta = (
-                                data.get("choices", [{}])[0]
-                                .get("delta", {})
-                                .get("content")
-                            )
-                            if isinstance(delta, str) and delta:
-                                yield delta
-                        except (json.JSONDecodeError, IndexError):
-                            continue
+                            try:
+                                data = json.loads(line[6:])
+                                if _chat_completion_failed(data):
+                                    terminal_failed = True
+                                    continue
+                                delta = (
+                                    data.get("choices", [{}])[0]
+                                    .get("delta", {})
+                                    .get("content")
+                                )
+                                if isinstance(delta, str) and delta:
+                                    yield delta
+                            except (json.JSONDecodeError, IndexError):
+                                continue
+                except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    if terminal_failed:
+                        raise HermesConnectionError(
+                            "Hermes API reported an incomplete chat response",
+                            error_category=ERROR_CATEGORY_SERVER,
+                        ) from err
+                    raise
+                if terminal_failed:
+                    raise HermesConnectionError(
+                        "Hermes API reported an incomplete chat response",
+                        error_category=ERROR_CATEGORY_SERVER,
+                    )
+                raise HermesConnectionError("Stream ended without a completion marker")
 
         except HermesApiError:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise HermesConnectionError(
-                f"Stream connection error: {err}"
+                "Stream connection error",
+                error_category=_transport_error_category(err),
             ) from err
 
     @staticmethod
@@ -467,6 +498,24 @@ class HermesApiClient:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError):
             return data.get("error", {}).get("message", "(No response)")
+
+
+def _chat_completion_failed(data: Any) -> bool:
+    """Interpret Hermes terminal metadata without exposing its raw error details."""
+    if not isinstance(data, dict):
+        return False
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        if choices[0].get("finish_reason") in ("error", "length"):
+            return True
+    hermes = data.get("hermes")
+    if isinstance(hermes, dict) and (
+        hermes.get("completed") is False
+        or hermes.get("partial") is True
+        or hermes.get("failed") is True
+    ):
+        return True
+    return "error" in data and data["error"] is not None
 
 
 def _transport_error_category(err: BaseException) -> str:

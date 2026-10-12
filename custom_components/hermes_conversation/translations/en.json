@@ -36,6 +36,9 @@
     "binary_sensor": {
       "api_connectivity": {
         "name": "API connectivity"
+      },
+      "processing_conversation": {
+        "name": "Processing conversation"
       }
     },
     "sensor": {
@@ -51,6 +54,21 @@
       },
       "last_successful_connection": {
         "name": "Last successful connection"
+      },
+      "active_conversation_requests": {
+        "name": "Active conversation requests"
+      },
+      "last_conversation_duration": {
+        "name": "Last conversation duration"
+      },
+      "last_conversation_result": {
+        "name": "Last conversation result",
+        "state": {
+          "completed": "Completed",
+          "partial": "Partial",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        }
       }
     }
   },

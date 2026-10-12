@@ -18,6 +18,7 @@ A [Home Assistant](https://home-assistant.io/) custom integration that connects 
 - **Configurable** — connection settings and prompt options can be changed anytime via Configure
 - **Multiple instances and profiles** — connect Assist agents to the root API, Home Assistant add-on profile routes, or native Hermes multiplexer routes
 - **Diagnostic entities** — one device per config entry exposes authenticated API connectivity, optional health, API latency, and last successful connection
+- **Conversation activity**: push-only counts, durations, results, and lifecycle events for conversation requests originating through this Home Assistant entry (including `conversation.process`), not global Hermes activity
 
 ## Requirements
 
@@ -142,7 +143,7 @@ Entity IDs follow the config-entry title. The examples above use the default tit
 - Legacy Hermes builds that return `404` for `/v1/health` still authenticate through `/v1/models` when the models list identifies Hermes.
 - `/health/detailed` `404`/`405`/`501`, malformed responses and server errors leave health unavailable while basic connectivity can stay on. A `401`/`403` makes connectivity off too.
 - Polling uses only health and model-list endpoints; it never runs the model or spends tokens. Health reports Hermes's internal readiness, not a live provider test. See the [Hermes API documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server#get-healthdetailed).
-- Uptime and activity counters are not exposed: these require reliable server telemetry with an unambiguous scope. Last successful connection is not the agent's start time and resets when the entry reloads.
+- Gateway-wide uptime and workload counters are not exposed: these require reliable server telemetry with an unambiguous scope. Last successful connection is not the agent's start time and resets when the entry reloads.
 - Missing optional health is not idle. Use connectivity `off` for outage automations.
 - Attributes only expose sanitized error categories (`auth`, `timeout`, `redirect`, `unsupported`, `malformed`, `server`, `unreachable`). Raw response bodies, credentials, and detailed health payloads are never copied into entity state.
 
@@ -161,6 +162,80 @@ automation:
         data:
           title: Hermes Agent
           message: Authenticated API connectivity has been off for 2 minutes.
+```
+
+## Conversation activity
+
+The same per-entry device also exposes four push-only entities for conversation requests
+**originating in Home Assistant through this integration entry**, including Assist and
+`conversation.process`. They are not gateway-wide or profile-wide activity and do not
+observe Telegram, other clients, or work continuing on Hermes after HA disconnects.
+Changes appear immediately on request start and finish; they do not wait for the
+60-second diagnostics poll and make no additional API or model requests. The count is
+local and resets to zero on entry reload. Last-result sensors start unavailable again
+after a reload, rather than claiming a previous result or idle work elsewhere.
+
+The device name already supplies the `Hermes Agent` prefix for the default entry title.
+Fresh entity IDs below use that title; existing published diagnostic IDs remain unchanged.
+A differently titled entry uses its own title as the prefix.
+
+| Entity | Meaning |
+| ------ | ------- |
+| `binary_sensor.hermes_agent_processing_conversation` | On while at least one conversation request through this entry is active. |
+| `sensor.hermes_agent_active_conversation_requests` | Concurrent requests through this entry, including overlaps; zero says nothing about activity elsewhere. |
+| `sensor.hermes_agent_last_conversation_duration` | Elapsed seconds of the most recently finished request, measured with a monotonic clock. Unavailable until a request finishes. |
+| `sensor.hermes_agent_last_conversation_result` | Most recently finished request: `completed`, `partial`, `failed`, or `cancelled`. Unavailable until a request finishes. |
+
+`partial` means the modern ChatLog path delivered some content but the stream then
+failed, so the partial reply was kept without retrying model or tool work. On legacy
+HA without ChatLog, a stream failure produces a `failed` result. Non-streaming
+fallback is reserved for an explicit, known pre-dispatch streaming rejection from an
+adapter; if it succeeds, the local request is `completed`. HTTP failures after a
+streaming POST (including 4xx, 429, and 5xx), timeouts, and connection drops are
+ambiguous: even before the first response delta, Hermes may already have run tools.
+They fail locally without a second POST. A failure after delivered content is
+`partial` on modern HA, with no retry. A Hermes SSE terminal with
+`finish_reason: error`, `finish_reason: length`, or explicit incomplete/failed
+`hermes` metadata is not a success even if followed by `[DONE]`. A non-streaming
+HTTP 200 with the same metadata (or `X-Hermes-Completed: false`) is likewise not
+reported as successful. Server-provided error details are not copied into the
+reply, logs, or activity event: terminal failures use the safe `server` category.
+With no delivered content the local outcome is `failed`; with already-delivered
+content, modern ChatLog retains a `partial` reply and legacy HA reports `failed`.
+`cancelled` means HA stopped waiting for the local request or the entry unloaded;
+it does **not** stop backend work remotely. A local `completed` outcome does not
+prove that a requested tool action took effect or that audio playback completed.
+
+The `hermes_conversation_activity` event fires at start and terminal transition:
+
+| Field | Values |
+| ----- | ------ |
+| `entry_id` | Config entry ID (use to distinguish entries). |
+| `request_id` | Locally generated UUID, identical for start and finish; not a conversation or Hermes session ID. |
+| `source` | Always `home_assistant`. |
+| `status` | `started`, `completed`, `partial`, `failed`, or `cancelled`. |
+| `active_requests` | Concurrent local count after this transition. |
+| `duration_seconds` | Nonnegative elapsed seconds on terminal events only. |
+| `error_category` | Optional terminal category from a fixed vocabulary: `auth`, `timeout`, `redirect`, `unsupported`, `malformed`, `server`, `unreachable`. |
+
+Events and entities never contain prompts, responses, user or device names, backend
+session IDs, credentials or raw errors. To notify when a local request finishes
+unsuccessfully, filter the terminal event and use only its safe metadata:
+
+```yaml
+automation:
+  - alias: Hermes conversation request did not complete
+    trigger:
+      - platform: event
+        event_type: hermes_conversation_activity
+    condition:
+      - condition: template
+        value_template: "{{ trigger.event.data.status in ['partial', 'failed'] }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Hermes conversation request
+          message: "Local request ended {{ trigger.event.data.status }}."
 ```
 
 ## How It Works

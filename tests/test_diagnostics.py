@@ -867,7 +867,7 @@ class DiagnosticsCoordinatorEntityTests(unittest.IsolatedAsyncioTestCase):
         await binary_module.async_setup_entry(
             hass, entry, lambda entities: added.extend(entities)
         )
-        self.assertEqual(len(added), 4)
+        self.assertEqual(len(added), 8)
         keys = {entity.translation_key for entity in added}
         self.assertEqual(
             keys,
@@ -876,6 +876,10 @@ class DiagnosticsCoordinatorEntityTests(unittest.IsolatedAsyncioTestCase):
                 "health",
                 "api_latency",
                 "last_successful_connection",
+                "processing_conversation",
+                "active_conversation_requests",
+                "last_conversation_duration",
+                "last_conversation_result",
             },
         )
 
@@ -893,7 +897,10 @@ class DiagnosticsContractTests(unittest.TestCase):
         )
         expected = {
             "entity": {
-                "binary_sensor": {"api_connectivity": {"name": "API connectivity"}},
+                "binary_sensor": {
+                    "api_connectivity": {"name": "API connectivity"},
+                    "processing_conversation": {"name": "Processing conversation"},
+                },
                 "sensor": {
                     "health": {
                         "name": "Health",
@@ -902,6 +909,15 @@ class DiagnosticsContractTests(unittest.TestCase):
                     "api_latency": {"name": "API latency"},
                     "last_successful_connection": {
                         "name": "Last successful connection"
+                    },
+                    "active_conversation_requests": {"name": "Active conversation requests"},
+                    "last_conversation_duration": {"name": "Last conversation duration"},
+                    "last_conversation_result": {
+                        "name": "Last conversation result",
+                        "state": {
+                            "completed": "Completed", "partial": "Partial",
+                            "failed": "Failed", "cancelled": "Cancelled",
+                        },
                     },
                 },
             }

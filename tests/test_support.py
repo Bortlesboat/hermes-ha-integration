@@ -258,6 +258,17 @@ class FakeStates:
         return None
 
 
+class FakeBus:
+    def __init__(self):
+        self.events = []
+        self.fail = False
+
+    def async_fire(self, event_type, event_data=None):
+        if self.fail:
+            raise RuntimeError("bus unavailable")
+        self.events.append(SimpleNamespace(event_type=event_type, data=dict(event_data or {})))
+
+
 class FakeHass:
     def __init__(self, *, session=None, states=None, location_name="Home"):
         self._session = session if session is not None else FailingSession()
@@ -266,6 +277,7 @@ class FakeHass:
         self.services = FakeServices()
         self.states = FakeStates(states)
         self.data = {}
+        self.bus = FakeBus()
         self.config_entries = FakeConfigEntries(self)
         self._entity_registry = SimpleNamespace(async_get=lambda entity_id: None)
         self._device_registry = SimpleNamespace(async_get=lambda device_id: None)
@@ -380,6 +392,14 @@ def install_stubs():
         def async_on_remove(self, func):
             self._remove_callbacks.append(func)
             return func
+
+        async def async_added_to_hass(self):
+            return None
+
+        async def async_will_remove_from_hass(self):
+            for callback in self._remove_callbacks:
+                callback()
+            self._remove_callbacks.clear()
 
         def async_write_ha_state(self):
             self.written_states += 1
@@ -554,7 +574,6 @@ def install_stubs():
 
         async def async_config_entry_first_refresh(self):
             self.used_first_refresh = True
-            exceptions = types.ModuleType("homeassistant.exceptions")
             class ConfigEntryNotReady(Exception):
                 pass
             try:
