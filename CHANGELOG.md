@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1] - 2026-10-24
+
+### Fixed
+
+- Consume a complete `NO_REPLY` control response before Home Assistant speech, including markers split across streaming chunks. Intentional silence produces no fallback speech and no follow-up listening, including Always mode. Formatted mentions and ordinary prose remain speech. Thanks to @rmaffeo for #22.
+- Refresh the release-version assertions left at 1.3.1 after the 1.4.0 release.
+
 ## [1.4.0] - 2026-10-12
 
 ### Added
