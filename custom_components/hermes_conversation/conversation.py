@@ -259,8 +259,6 @@ def _sanitize_stream_text_for_speech(text: str) -> str:
 
 def _sanitize_text_for_speech(text: str) -> str:
     """Convert markdown-ish assistant output into plain speech-friendly text."""
-    if is_silence(text):
-        return ""
     if not text:
         return text
 
@@ -633,8 +631,10 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
                 err,
             )
             result = await self.client.async_send_message(messages, session_id=session_id)
-            if request_state is not None and is_silence(result.text):
-                request_state["intentional_silence"] = True
+            if is_silence(result.text):
+                if request_state is not None:
+                    request_state["intentional_silence"] = True
+                return
             if safe_text := _sanitize_text_for_speech(result.text):
                 yield safe_text
             return

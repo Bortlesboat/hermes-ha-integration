@@ -6,7 +6,12 @@ from custom_components.hermes_conversation.const import (
 from runtime_tests.test_activity_runtime import _setup, _process
 
 
-@pytest.mark.parametrize('text,silent', [('NO_REPLY',True), ('NO_REPLY means no response.',False)])
+@pytest.mark.parametrize('text,silent', [
+    ('NO_REPLY', True),
+    ('NO_REPLY means no response.', False),
+    ('**NO_REPLY**', False),
+    ('`NO_REPLY`', False),
+])
 async def test_real_conversation_silence(hass_ready, hermes_api, text, silent):
     hass = hass_ready
     hermes_api.chat_response = text
@@ -23,3 +28,6 @@ async def test_real_conversation_silence(hass_ready, hermes_api, text, silent):
         assert result.continue_conversation is False
     else:
         assert result.response.speech['plain']['speech']
+        assert result.continue_conversation is True
+        if text in ('**NO_REPLY**', '`NO_REPLY`'):
+            assert result.response.speech['plain']['speech'] == 'NO_REPLY'

@@ -39,7 +39,7 @@ class SilenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_optional_ascii_whitespace_is_silent(self):
         agent = self.make_agent([' \nNO', '_REPLY', '\t '])
         self.assertEqual([chunk async for chunk in agent._iter_voice_safe_response([])], [])
-        self.assertEqual(_sanitize_text_for_speech(' \nNO_REPLY\t '), '')
+        self.assertEqual(_sanitize_text_for_speech(' \nNO_REPLY\t '), 'NO_REPLY')
 
     async def test_mentions_and_later_prose_are_not_silenced(self):
         for chunks in (['NO_', 'REPLY means no speech.'], ['The token ', 'NO_REPLY'], ['NO_REPLY', ' but explain this.'], ['No_reply']):
@@ -76,7 +76,29 @@ class SilenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.feed('NO_REPLY'), 'NO_REPLY')
         self.assertFalse(stream.silenced)
 
-    def test_nonstream_marker_is_not_spoken(self):
-        self.assertEqual(_sanitize_text_for_speech('NO_REPLY'), '')
+    def test_sanitizer_does_not_reclassify_cleaned_text_as_a_marker(self):
+        self.assertEqual(_sanitize_text_for_speech('NO_REPLY'), 'NO_REPLY')
         self.assertTrue(_sanitize_text_for_speech('NO_REPLY means no speech.'))
         self.assertTrue(_sanitize_text_for_speech(' ' * 65 + 'NO_REPLY'))
+
+    async def test_formatted_mentions_remain_spoken_in_stream_and_fallback(self):
+        from custom_components.hermes_conversation.api import HermesStreamSetupError
+        for text in ('**NO_REPLY**', '`NO_REPLY`'):
+            for fallback in (False, True):
+                with self.subTest(text=text, fallback=fallback):
+                    agent = self.make_agent(list(text))
+                    if fallback:
+                        agent.client = FakeClient(
+                            stream_error=HermesStreamSetupError('setup'), send_text=text
+                        )
+                    agent._async_speak_fallback = AsyncMock()
+                    state = {}
+                    result, failed = await agent._async_process_inner(
+                        FakeConversationInput('Explain the marker'),
+                        chat_log=FakeChatLog('mention', 'Explain the marker'),
+                        request_state=state,
+                    )
+                    self.assertFalse(failed)
+                    self.assertEqual(result.response.speech['plain']['speech'], 'NO_REPLY')
+                    self.assertTrue(result.continue_conversation)
+                    self.assertIsNot(state.get('intentional_silence'), True)
