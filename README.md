@@ -101,6 +101,17 @@ If your installed integration version does not show the **Profile** field yet, t
 
 The default system prompt includes the current date/time, timezone, the user's name, the home name, and exposed entity names, aliases, domains, areas, and states (if enabled). Entity exposure is off by default since Hermes Agent can access Home Assistant entities directly when a Home Assistant token is configured in the Hermes Agent add-on.
 
+### Intentional silence
+
+A complete response of `NO_REPLY` (with at most 64 total characters including any
+surrounding ASCII whitespace) is Hermes's intentional-silence marker. The
+integration holds a possible marker
+across streaming chunks and consumes it before speech output. It emits no speech,
+performs no fallback TTS, and does not reopen listening, even in Always mode.
+Text that merely mentions `NO_REPLY` remains an ordinary response. This is a
+presentation protocol, not proof that a device action succeeded; the backend is
+responsible for deciding when silence is appropriate.
+
 ### Voice continuity modes
 
 Recommended mode if you want to say the wake word each turn **without** losing short-term context:

@@ -59,6 +59,7 @@ from .const import (
     LEGACY_CONF_INSTRUCTIONS,
 )
 from .speech import SpeechEmojiFilter, SpeechMarkdownFilter, strip_speech_emoji
+from .silence import SpeechSilenceFilter, is_silence
 
 try:
     from homeassistant.components.conversation import ChatLog, async_get_chat_log
@@ -134,9 +135,11 @@ class _UnsafeSpeechStreamFilter:
         self._discard_until_tag: str | None = None
         self._emoji_filter = SpeechEmojiFilter()
         self._markdown_filter = SpeechMarkdownFilter()
+        self._silence_filter = SpeechSilenceFilter()
 
     def feed(self, text: str) -> str:
         """Add a stream delta and return the safe text that can be emitted now."""
+        text = self._silence_filter.feed(text)
         if not text:
             return ""
         self._buffer += text
@@ -144,11 +147,13 @@ class _UnsafeSpeechStreamFilter:
 
     def flush(self, *, partial: bool = False) -> str:
         """Return the safe suffix, without releasing incomplete tags on errors."""
+        pending = self._silence_filter.flush()
         if partial:
             self._buffer = ""
             self._discard_until_tag = None
             safe = self._emoji_filter.feed(self._markdown_filter.flush())
             return safe + self._emoji_filter.flush()
+        self._buffer += pending
         return self._drain(final=True)
 
     def _drain(self, *, final: bool) -> str:
@@ -427,6 +432,8 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
         request_state: dict[str, Any] | None = None,
     ) -> tuple[ConversationResult, bool]:
         """Inner processing — wrapped by async_process for error logging."""
+        if request_state is None:
+            request_state = {}
         conv_id = (
             getattr(chat_log, "conversation_id", None)
             or user_input.conversation_id
@@ -480,7 +487,9 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
 
         try:
             if chat_log is None:
-                response_text = await self._get_response(messages, session_id=session_id)
+                response_text = await self._get_response(
+                    messages, session_id=session_id, request_state=request_state
+                )
             else:
                 response_text = await self._stream_chat_log_response(
                     chat_log,
@@ -522,6 +531,10 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
                 self._history.popitem(last=False)
 
         intent_response = intent.IntentResponse(language=user_input.language)
+        if request_state.get("intentional_silence") is True:
+            return self._build_conversation_result(
+                intent_response, conv_id, continue_conversation=False
+            ), False
         intent_response.async_set_speech(spoken_text)
         await self._async_speak_fallback(spoken_text, user_input)
         continue_conversation = self._should_continue_conversation(
@@ -549,7 +562,7 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
             started = False
             try:
                 async for chunk in self._iter_voice_safe_response(
-                    messages, session_id=session_id
+                    messages, session_id=session_id, request_state=request_state
                 ):
                     if not chunk:
                         continue
@@ -593,6 +606,7 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
         self,
         messages: list[dict[str, str]],
         session_id: str | None = None,
+        request_state: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Yield speech-safe assistant text chunks from Hermes streaming."""
         speech_filter = _UnsafeSpeechStreamFilter()
@@ -617,12 +631,18 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
                 err,
             )
             result = await self.client.async_send_message(messages, session_id=session_id)
+            if is_silence(result.text):
+                if request_state is not None:
+                    request_state["intentional_silence"] = True
+                return
             if safe_text := _sanitize_text_for_speech(result.text):
                 yield safe_text
             return
 
         if final_chunk := speech_filter.flush():
             yield final_chunk
+        if request_state is not None and speech_filter._silence_filter.silenced:
+            request_state["intentional_silence"] = True
 
     def _agent_id(self) -> str:
         """Return the best available Home Assistant agent identifier."""
@@ -632,11 +652,12 @@ class HermesConversationAgent(ConversationEntity, AbstractConversationAgent):
         self,
         messages: list[dict[str, str]],
         session_id: str | None = None,
+        request_state: dict[str, Any] | None = None,
     ) -> str:
         """Get a response from the API using voice-safe streaming."""
         chunks: list[str] = []
         try:
-            async for chunk in self._iter_voice_safe_response(messages, session_id):
+            async for chunk in self._iter_voice_safe_response(messages, session_id, request_state):
                 chunks.append(chunk)
         except HermesApiError:
             if chunks:
