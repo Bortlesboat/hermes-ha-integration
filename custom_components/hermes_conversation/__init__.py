@@ -12,7 +12,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .activity import ConversationActivityTracker
 from .api import HermesApiClient
 from .compat import entry_value, resolve_connection_config
-from .const import DEFAULT_TIMEOUT, DOMAIN, LEGACY_CONF_MODEL, LEGACY_CONF_TIMEOUT
+from .const import CONF_MODEL, DEFAULT_TIMEOUT, DOMAIN, LEGACY_CONF_TIMEOUT
 from .coordinator import HermesDiagnosticsCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         profile_route=connection.profile_route,
         use_ssl=connection.use_ssl,
         verify_ssl=connection.verify_ssl,
-        model=entry_value(entry, LEGACY_CONF_MODEL, None),
+        model=entry_value(entry, CONF_MODEL, None),
         request_timeout=entry_value(entry, LEGACY_CONF_TIMEOUT, DEFAULT_TIMEOUT),
     )
 

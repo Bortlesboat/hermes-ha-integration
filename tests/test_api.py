@@ -590,6 +590,40 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls[0]["timeout"].total, 30)
         self.assertEqual(session.calls[0]["timeout"].sock_read, 12)
 
+    async def test_streaming_payload_uses_configured_model(self):
+        chunks = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}) + "\n",
+            "data: [DONE]\n",
+        ]
+        session = FakeSession([FakeResponse(chunks=chunks)])
+        client = HermesApiClient(
+            session=session,
+            host="agent.local",
+            port=8443,
+            model="custom-model",
+        )
+
+        parts = [
+            part
+            async for part in client.async_stream_message(
+                [{"role": "user", "content": "hi"}]
+            )
+        ]
+
+        self.assertEqual("".join(parts), "ok")
+        self.assertEqual(session.calls[0]["json"]["model"], "custom-model")
+        self.assertTrue(session.calls[0]["json"]["stream"])
+
+    async def test_payloads_default_to_server_model(self):
+        session = FakeSession(
+            [FakeResponse(json_data={"choices": [{"message": {"content": "ok"}}]})]
+        )
+        client = HermesApiClient(session=session, host="agent.local", port=8443)
+
+        await client.async_send_message([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(session.calls[0]["json"]["model"], "hermes-agent")
+
     async def test_streaming_ignores_custom_sse_events(self):
         chunks = [
             "event: hermes.tool.progress\n",

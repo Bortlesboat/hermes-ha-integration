@@ -26,6 +26,7 @@ class ProfileRouteFamily(str, Enum):
 # Options keys (user-changeable after setup)
 # ---------------------------------------------------------------------------
 CONF_PROMPT = "prompt"
+CONF_MODEL = "model"
 CONF_INCLUDE_EXPOSED_ENTITIES = "include_exposed_entities"
 CONF_CONTEXT_MAX_CHARS = "context_max_chars"
 CONF_CONTINUED_CONVERSATION_MODE = "continued_conversation_mode"
@@ -39,7 +40,6 @@ CONF_FALLBACK_TTS_ENGINE = "fallback_tts_engine"
 
 # Legacy config keys still found in existing local installs.
 LEGACY_CONF_API_BASE_URL = "api_base_url"
-LEGACY_CONF_MODEL = "model"
 LEGACY_CONF_TIMEOUT = "timeout"
 LEGACY_CONF_INSTRUCTIONS = "instructions"
 

@@ -45,6 +45,7 @@ from .const import (
     CONF_FALLBACK_TTS_ENGINE,
     CONF_HOST,
     CONF_INCLUDE_EXPOSED_ENTITIES,
+    CONF_MODEL,
     CONF_PORT,
     CONF_PROFILE,
     CONF_PROFILE_ROUTE,
@@ -58,6 +59,7 @@ from .const import (
     DEFAULT_EXPOSE_DEVICE_CONTEXT,
     DEFAULT_FALLBACK_MEDIA_PLAYER,
     DEFAULT_FALLBACK_TTS_ENGINE,
+    DEFAULT_MODEL,
     DEFAULT_PORT,
     DEFAULT_PROFILE_ROUTE,
     DEFAULT_PROMPT,
@@ -299,6 +301,38 @@ class HermesConversationConfigFlow(ConfigFlow, domain=DOMAIN):
 class HermesConversationOptionsFlow(OptionsFlow):
     """Handle options for Hermes Conversation."""
 
+    async def _async_model_options(self, current: str) -> list[SelectOptionDict]:
+        """Offer the server default plus the model IDs the server advertises.
+
+        Discovery is best effort: when it fails, the current value stays selectable.
+        """
+        options = [SelectOptionDict(value=DEFAULT_MODEL, label="Server default")]
+        seen = {DEFAULT_MODEL}
+        connection = resolve_connection_config(self.config_entry)
+        client = HermesApiClient(
+            async_get_clientsession(self.hass),
+            connection.host,
+            connection.port,
+            connection.api_key,
+            use_ssl=connection.use_ssl,
+            verify_ssl=connection.verify_ssl,
+            profile=connection.profile,
+            profile_route=connection.profile_route,
+        )
+        try:
+            models = await client.async_get_models()
+        except Exception:
+            _LOGGER.debug("Could not list Hermes models", exc_info=True)
+            models = []
+        for model in models:
+            model_id = model.get("id") if isinstance(model, dict) else None
+            if isinstance(model_id, str) and model_id and model_id not in seen:
+                seen.add(model_id)
+                options.append(SelectOptionDict(value=model_id, label=model_id))
+        if current not in seen:
+            options.append(SelectOptionDict(value=current, label=current))
+        return options
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -488,6 +522,10 @@ class HermesConversationOptionsFlow(OptionsFlow):
                     return self.async_create_entry(title="", data=None)
 
         connection = resolve_connection_config(self.config_entry)
+        current_model = (
+            entry_value(self.config_entry, CONF_MODEL, None) or DEFAULT_MODEL
+        )
+        model_options = await self._async_model_options(current_model)
 
         return self.async_show_form(
             step_id="init",
@@ -534,6 +572,10 @@ class HermesConversationOptionsFlow(OptionsFlow):
                             legacy_keys=(LEGACY_CONF_INSTRUCTIONS,),
                         ),
                     ): TextSelector(TextSelectorConfig(multiline=True)),
+                    vol.Optional(
+                        CONF_MODEL,
+                        default=current_model,
+                    ): SelectSelector(SelectSelectorConfig(options=model_options)),
                     vol.Optional(
                         CONF_INCLUDE_EXPOSED_ENTITIES,
                         default=entry_value(

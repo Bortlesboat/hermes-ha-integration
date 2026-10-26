@@ -18,11 +18,13 @@ from custom_components.hermes_conversation.config_flow import (
 from custom_components.hermes_conversation.const import (
     CONF_API_KEY,
     CONF_HOST,
+    CONF_MODEL,
     CONF_PORT,
     CONF_PROFILE,
     CONF_PROMPT,
     CONF_USE_SSL,
     CONF_VERIFY_SSL,
+    DOMAIN,
     LEGACY_CONF_API_BASE_URL,
 )
 
@@ -844,6 +846,133 @@ class OptionsFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replacement.data[CONF_PROFILE], "replacement")
         self.assertEqual(hass.config_entries.updated, [])
 
+
+    def model_choices(self, result):
+        selector = result["data_schema"][CONF_MODEL]["select_selector"]
+        return [option["value"] for option in selector["options"]]
+
+    async def show_form_with_defaults(self, flow):
+        defaults = {}
+
+        def optional(key, default=None):
+            defaults[key] = default
+            return key
+
+        with mock.patch("voluptuous.Optional", optional):
+            result = await flow.async_step_init()
+        return result, defaults
+
+    async def test_options_form_offers_server_default_and_advertised_models(self):
+        entry = FakeConfigEntry(data=connection_input(), options={})
+        session = FakeSession(
+            [
+                FakeResponse(
+                    json_data={
+                        "data": [
+                            {"id": "hermes-agent"},
+                            {"id": "fast"},
+                            {"id": "smart"},
+                            {"id": "fast"},
+                        ]
+                    }
+                )
+            ]
+        )
+        flow = self.make_flow(entry, session=session)
+
+        result, defaults = await self.show_form_with_defaults(flow)
+
+        self.assertEqual(
+            self.model_choices(result), ["hermes-agent", "fast", "smart"]
+        )
+        selector = result["data_schema"][CONF_MODEL]["select_selector"]
+        self.assertEqual(selector["options"][0]["label"], "Server default")
+        self.assertEqual(defaults[CONF_MODEL], "hermes-agent")
+        self.assertEqual(
+            session.calls[0]["url"], "https://agent.local:8443/v1/models"
+        )
+        self.assertEqual(session.calls[0]["headers"]["Authorization"], "Bearer secret")
+
+    async def test_options_form_keeps_saved_model_when_discovery_fails(self):
+        entry = FakeConfigEntry(
+            data=connection_input(), options={CONF_MODEL: "smart"}
+        )
+        flow = self.make_flow(entry, session=FakeSession([FakeResponse(status=503)]))
+
+        result, defaults = await self.show_form_with_defaults(flow)
+
+        self.assertEqual(self.model_choices(result), ["hermes-agent", "smart"])
+        self.assertEqual(defaults[CONF_MODEL], "smart")
+
+    async def test_options_form_opens_when_model_discovery_raises(self):
+        entry = FakeConfigEntry(data=connection_input(), options={})
+        flow = self.make_flow(entry)  # the default session fails every request
+
+        result = await flow.async_step_init()
+
+        self.assertEqual(result["type"], "form")
+        self.assertEqual(self.model_choices(result), ["hermes-agent"])
+
+    async def test_options_form_preserves_legacy_model_not_advertised(self):
+        entry = FakeConfigEntry(
+            data={**connection_input(), CONF_MODEL: "hand-edited"}, options={}
+        )
+        session = FakeSession(
+            [FakeResponse(json_data={"data": [{"id": "hermes-agent"}, {"id": "fast"}]})]
+        )
+        flow = self.make_flow(entry, session=session)
+
+        result, defaults = await self.show_form_with_defaults(flow)
+
+        self.assertEqual(
+            self.model_choices(result), ["hermes-agent", "fast", "hand-edited"]
+        )
+        self.assertEqual(defaults[CONF_MODEL], "hand-edited")
+
+    async def test_options_saves_model_without_connection_probe(self):
+        entry = FakeConfigEntry(
+            data=connection_input(), options={CONF_PROMPT: "keep me"}
+        )
+        flow = self.make_flow(entry, session=NoRequestSession())
+
+        result = await flow.async_step_init({CONF_MODEL: "fast"})
+
+        self.assertEqual(result["type"], "create_entry")
+        self.assertEqual(entry.options, {CONF_PROMPT: "keep me", CONF_MODEL: "fast"})
+        self.assertEqual(entry.data, connection_input())
+
+    async def test_model_change_reload_uses_new_model_and_fresh_sessions(self):
+        entry = FakeConfigEntry(
+            entry_id="model-entry",
+            data=connection_input(),
+            options={CONF_MODEL: "fast"},
+        )
+        session = FakeSession([])
+        hass = FakeHass(session=session)
+        hass.config_entries.entries = [entry]
+        await integration.async_setup_entry(hass, entry)
+        old_sessions = hass.data[DOMAIN][entry.entry_id]["sessions"]
+        old_sessions["voice"] = {"session_id": "sess-fast"}
+        flow = self.make_flow(entry, hass=hass)
+
+        result = await flow.async_step_init({CONF_MODEL: "smart"})
+        self.assertEqual(result["type"], "create_entry")
+        await hass.config_entries.async_process_pending_updates()
+        self.assertEqual(hass.config_entries.reloaded, [entry.entry_id])
+
+        # The stub reload only records the call; set the entry up again as HA would.
+        await integration.async_setup_entry(hass, entry)
+        new_sessions = hass.data[DOMAIN][entry.entry_id]["sessions"]
+        self.assertIsNot(new_sessions, old_sessions)
+        self.assertEqual(new_sessions, {})
+
+        session.responses = [
+            FakeResponse(json_data={"choices": [{"message": {"content": "ok"}}]})
+        ]
+        client = hass.data[DOMAIN][entry.entry_id]["client"]
+        await client.async_send_message([{"role": "user", "content": "hi"}])
+        self.assertEqual(session.calls[-1]["json"]["model"], "smart")
+        self.assertNotIn("X-Hermes-Session-Id", session.calls[-1]["headers"])
 
 class PublicationMetadataTests(unittest.TestCase):
     def test_manifest_is_version_1_4_1(self):

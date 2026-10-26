@@ -78,6 +78,7 @@ After setup, all settings can be changed via **Settings â†’ Devices & Services â
 | Use HTTPS                                | Yes                 | Connect via HTTPS                                                                      |
 | Verify SSL certificate                   | No                  | Verify the SSL certificate (disable for self-signed)                                   |
 | System Prompt                            | (built-in)          | Jinja2 template; empty omits custom context, but speech-format guidance still applies                         |
+| Model                                    | Server default      | Server default, or a model ID listed by the server's `/v1/models`                      |
 | Include exposed entities                 | No                  | Include smart home device states in the system prompt                                  |
 | Max context characters                   | 12000               | Character limit for the entity context block                                           |
 | Follow-up listening                      | Off                 | Off, always on, or automatic only when Hermes asks a follow-up question                 |
@@ -87,6 +88,8 @@ After setup, all settings can be changed via **Settings â†’ Devices & Services â
 | Always speak replies through fallback    | No                  | Also send voice replies through a fallback `tts.speak` target for device-origin turns  |
 | Fallback media player entity_id          | (empty)             | Media player target for fallback speech                                                |
 | Fallback TTS entity_id                   | (empty)             | TTS entity used for fallback speech                                                    |
+
+The **Model** list only offers more than **Server default** when the Hermes server advertises other models, which requires `model_routes` in the Hermes gateway configuration. A value that is already saved stays selectable even when the server cannot be reached.
 
 ### Profile routes
 
